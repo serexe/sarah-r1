@@ -4,7 +4,7 @@
 
 Tap to talk, hear a reply, and keep the conversation on screen. S.A.R.A.H pairs a native Qt/QML client with a self-hosted Python bridge for local speech processing, Codex conversation, and optional tools for your home, notes, and calendar.
 
-A hobby project by **serexe**. **Ubuntu Touch, not Android.** This is experimental source for people comfortable building and configuring their own setup, not a ready-to-install consumer assistant.
+By **serexe**. **Ubuntu Touch, not Android.** This is experimental source for people comfortable building and configuring their own setup, not a ready-to-install consumer assistant.
 
 <p align="center">
   <img src="assets/sarah-r1-native-redacted.png" width="320" alt="Actual S.A.R.A.H native app on an R1: Connected · Armed status, New conversation control, and orange Tap to talk button. Conversation area visibly redacted." />
@@ -12,6 +12,10 @@ A hobby project by **serexe**. **Ubuntu Touch, not Android.** This is experiment
 <p align="center"><sub>Actual R1 screenshot from an earlier development build. System bar cropped; conversation visibly redacted for privacy. Not a mockup or proof that this public source candidate has been installed.</sub></p>
 
 [Get started](docs/SETUP.md) · [Configuration](docs/CONFIGURATION.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Verification](docs/VERIFICATION.md)
+
+## What does S.A.R.A.H mean?
+
+**Self Actuated Residential Automated Habitat** — a nod to SARAH, the smart house from the TV series *Eureka*. This S.A.R.A.H lives on an R1 rather than in a house.
 
 ## Why this exists
 
