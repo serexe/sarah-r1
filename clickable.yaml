@@ -1,0 +1,5 @@
+clickable_minimum_required: 8.10.0
+builder: cmake
+framework: ubuntu-touch-24.04-1.x
+qt_version: '5.15'
+restrict_arch: arm64

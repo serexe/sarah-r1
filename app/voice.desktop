@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=S.A.R.A.H
+Comment=Secure push-to-talk companion
+Exec=hermes-touch-voice
+Icon=icon.svg
+Terminal=false
+Type=Application
+X-Lomiri-Touch=true
+X-Ubuntu-Touch=true

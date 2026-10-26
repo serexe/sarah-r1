@@ -1,0 +1,11 @@
+{
+ "name":"hermes-touch-voice.local",
+ "description":"S.A.R.A.H Codex voice companion — local speech with opt-in integrations",
+ "architecture":"arm64",
+ "title":"S.A.R.A.H",
+ "hooks":{"voice":{"apparmor":"voice.apparmor","desktop":"voice.desktop"}},
+ "version":"0.2.6",
+ "maintainer":"Local Build <user@example.invalid>",
+ "license":"MIT",
+ "framework":"ubuntu-touch-24.04-1.x"
+}

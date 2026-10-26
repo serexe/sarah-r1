@@ -1,0 +1,36 @@
+# Private configuration and runtime state
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+.state/
+*.db
+*.db-*
+*.sqlite*
+*.pem
+*.key
+*.p12
+*.pfx
+native-settings.json
+settings.json
+# Generated artifacts and private records
+.git/
+.backups/
+evidence/
+artifacts/
+.verify/
+.build/
+build/
+package/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+*.wav
+*.mp3
+*.mp4
+*.png
+*.jpg
+*.click
