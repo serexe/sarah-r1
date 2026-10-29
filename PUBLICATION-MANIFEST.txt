@@ -25,6 +25,7 @@ bridge/core.py
 bridge/ha.py
 bridge/kokoro_tts.py
 bridge/prepare.py
+bridge/provision_device.py
 bridge/rollback.py
 bridge/runtime.py
 bridge/server.py
@@ -63,12 +64,14 @@ tests/test_http.py
 tests/test_idle_power.py
 tests/test_idle_power_process.py
 tests/test_kokoro.py
+tests/test_kokoro_root.py
 tests/test_living_room_group.py
 tests/test_native_sarah_branding.py
 tests/test_natural_light.py
 tests/test_notes_rw.py
 tests/test_open_conversation.py
 tests/test_partial_light_narration.py
+tests/test_provision_device.py
 tests/test_public_defaults.py
 tests/test_publication_gate.py
 tests/test_read_answers.py
