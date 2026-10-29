@@ -13,7 +13,7 @@ from .core import BlockedHermes, Conflict, Denied, Store, validate_audio, canoni
 
 def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None):
     adapter = adapter or BlockedHermes()
-    buckets=defaultdict(deque); tasks={}; confirmations={}
+    buckets=defaultdict(deque); tasks={}; confirmations={}; dispatching=set()
     media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
     @web.middleware
     async def guard(request,handler):
@@ -46,10 +46,27 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         await body(request,[])
         return web.json_response({'conversation':store.conversation(request['device'])},status=201)
     def active(device,turn):return store.get(device,turn)['state'] not in ('done','error','cancelled','uncertain')
+    async def transcribe(clip):
+        # Cancelling to_thread's await does not stop native STT. Keep the real
+        # worker, clip and admission slot owned until the thread has finished.
+        worker=asyncio.create_task(asyncio.to_thread(adapter.transcribe,clip))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try: await asyncio.shield(worker)
+                except asyncio.CancelledError: pass
+                except Exception: break
+            if not worker.cancelled(): worker.exception()
+            raise
+    def released(device,turn,clip,task):
+        # Also runs if Stop wins before execute's first instruction.
+        clip.unlink(missing_ok=True);tasks.pop(turn,None);confirmations.pop(turn,None)
+        if store.get(device,turn)['state']!='done':(media/(turn+'.mp3')).unlink(missing_ok=True)
     async def execute(device,turn,clip):
         transcript=''
         try:
-            transcript=await asyncio.to_thread(adapter.transcribe,clip)
+            transcript=await transcribe(clip)
             if not active(device,turn):return
             store.finish(device,turn,'thinking','S.A.R.A.H is thinking.',transcript)
             conversation=store.get(device,turn)['conversation']
@@ -82,9 +99,14 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                     # New note/calendar mutations consume one durable turn slot,
                     # even if a model changes arguments after an uncertain result.
                     if store.db.execute('SELECT 1 FROM dispatches WHERE device=? AND turn=? LIMIT 1',(device,turn)).fetchone(): return False
-                    return store.claim_dispatch(device,turn,conversation,action)
+                    claimed=store.claim_dispatch(device,turn,conversation,action)
+                    if claimed: dispatching.add(turn)
+                    return claimed
                 backend=tvtime if name == 'tvtime_on' else siyuan if name.startswith('sy_') else calendar if name.startswith('calendar_') else ha
-                outcome=await backend.dispatch(name,args,claim) if backend is not None else {'reply':'Requested tool unavailable. Nothing dispatched.'}
+                try:
+                    outcome=await backend.dispatch(name,args,claim) if backend is not None else {'reply':'Requested tool unavailable. Nothing dispatched.'}
+                finally:
+                    dispatching.discard(turn)
                 # Snapshot actual dispatcher output before giving it to runtime.
                 # Model text/JSON and runtime return values cannot add outcomes.
                 if name in ('ha_list_entities','ha_get_state','ha_list_services','sy_list_notebooks','sy_search','sy_read','calendar_list','calendar_read'):
@@ -116,9 +138,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         except Exception as e:
             # Never include raw upstream exceptions/tokens in device output.
             if active(device,turn):store.finish(device,turn,'error','Voice request failed ('+type(e).__name__+'). Any dispatched action outcome may be unknown; no automatic retry.',transcript)
-        finally:
-            clip.unlink(missing_ok=True);tasks.pop(turn,None);confirmations.pop(turn,None)
-            if not active(device,turn) and store.get(device,turn)['state']!='done':(media/(turn+'.mp3')).unlink(missing_ok=True)
+
     async def submit(request):
         if not adapter.ready:return web.json_response({'error':adapter.reason},status=503)
         if request.content_type!='audio/wav':raise Denied('audio_content_type')
@@ -131,7 +151,9 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         turn=store.admit(device,conversation,key,fingerprint)
         if not existing:
             clip=media/(turn+'.wav');clip.touch(mode=0o600,exist_ok=False);clip.write_bytes(data)
-            tasks[turn]=asyncio.create_task(execute(device,turn,clip))
+            task=asyncio.create_task(execute(device,turn,clip))
+            tasks[turn]=task
+            task.add_done_callback(lambda done, d=device, t=turn, c=clip: released(d,t,c,done))
         return web.json_response({'turn':turn},status=202)
     async def poll(request):
         turn=request.match_info['turn'];result=store.get(request['device'],turn)
@@ -161,13 +183,16 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
     async def cancel(request):
         await body(request,[])
         # Discard output; no retry/undo. Wake unconfirmed actions without dispatch.
-        turn=request.match_info['turn'];result=store.cancel(request['device'],turn)
+        turn=request.match_info['turn'];result=store.cancel(request['device'],turn,dispatch_pending=turn in dispatching)
         pending=confirmations.get(turn)
         if pending and not pending[3].done(): pending[3].set_result(False)
+        task=tasks.get(turn)
+        if task is not None and not task.cancelling(): task.cancel()
         return web.json_response(result)
     async def cleanup(app):
         pending=list(tasks.values())
-        for task in pending:task.cancel()
+        for task in pending:
+            if not task.cancelling(): task.cancel()
         await asyncio.gather(*pending,return_exceptions=True)
     app.on_cleanup.append(cleanup)
     app.router.add_get('/v1/health',health);app.router.add_post('/v1/conversations',conversation)

@@ -98,9 +98,11 @@ class Store:
         self.get(device,turn)
         if state not in ('thinking','confirming','acting','speaking','done','error'):raise Denied('invalid_state')
         self.db.execute("UPDATE turns SET state=?,detail=?,transcript=? WHERE id=? AND device=? AND state NOT IN ('cancelled','uncertain','done','error')",(state,detail,transcript,turn,device))
-    def cancel(self,device,turn):
+    def cancel(self,device,turn,*,dispatch_pending=False):
         self.get(device,turn)
-        self.db.execute("UPDATE turns SET state='cancelled', detail='Cancelled locally. Does not undo already dispatched actions.' WHERE id=? AND state NOT IN ('done','error','uncertain')",(turn,))
+        state='uncertain' if dispatch_pending else 'cancelled'
+        detail=('Stopped during dispatch. Action outcome unknown. No automatic retry; reconciliation required.' if dispatch_pending else 'Cancelled locally. Does not undo already dispatched actions.')
+        self.db.execute("UPDATE turns SET state=?, detail=? WHERE id=? AND state NOT IN ('done','error','uncertain')",(state,detail,turn))
         return self.get(device,turn)
     def recover(self):
         self.db.execute("UPDATE turns SET state='uncertain',detail='Interrupted. No automatic redispatch; reconciliation required.' WHERE state NOT IN ('done','error','cancelled','uncertain')")

@@ -6,6 +6,7 @@ import json
 import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import wave
@@ -257,7 +258,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
     async def test_http_expiry_terminal_and_next_admission(self):
         await self.http_expiry()
 
-    async def test_cancelled_http_stream_expires_before_worker_reuse(self):
+    async def test_stop_http_stream_closes_before_worker_reuse(self):
         await self.http_expiry(cancelled=True)
 
     async def http_expiry(self, cancelled=False):
@@ -267,7 +268,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
         async def speak(text, path):
             pass
         adapter.speak = speak
-        streams = [Stream([b': heartbeat\n\n'] * 30 + [DONE], delay=0.01), Stream()]
+        streams = [Stream([b': heartbeat\n\n'] * 30 + [DONE], delay=10 if cancelled else 0.01), Stream()]
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / 'state.db')
             store.provision('test', 'a' * 48)
@@ -281,7 +282,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             headers = {'Authorization': 'Bearer ' + 'a' * 48,
                        'Content-Type': 'audio/wav', 'X-Conversation': conversation}
             try:
-                with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, s) for s in streams]):
+                with patch.object(module, 'CODEX_TOTAL_SECONDS', 10 if cancelled else 0.05, create=True), Transport([(200, s) for s in streams]) as transport:
                     for key, expected in [('first', 'error'), ('second', 'done')]:
                         response = await client.post('/v1/turns', data=buf.getvalue(),
                                                      headers={**headers, 'Idempotency-Key': key})
@@ -295,13 +296,11 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
                                                                 json={}, headers={'Authorization': headers['Authorization']})
                             self.assertEqual(cancel_response.status, 200)
                             self.assertEqual((await cancel_response.json())['state'], 'cancelled')
-                            busy = await client.post('/v1/turns', data=buf.getvalue(),
-                                                     headers={**headers, 'Idempotency-Key': 'busy'})
-                            self.assertEqual(busy.status, 409)
-                            self.assertEqual((await busy.json())['error'], 'voice_worker_busy')
                             async with asyncio.timeout(1):
                                 while not streams[0].closed:
                                     await asyncio.sleep(0.005)
+                            self.assertTrue(all(c.is_closed for c in transport.clients))
+                            self.assertEqual(len(transport.requests), 1)
                             expected = 'cancelled'
                         async with asyncio.timeout(1):
                             while True:
@@ -315,6 +314,120 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await client.close()
                 store.close()
+
+    async def test_stop_native_tts_dispatch_ownership(self):
+        # Existing HTTP/runtime seams; native thread + synthetic child are real.
+        # No Whisper/Kokoro model, credentials or integration traffic involved.
+        for boundary in ('native', 'tts', 'dispatch'):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
+                adapter, _ = runtime()
+                started=asyncio.Event(); release=threading.Event(); native_done=threading.Event()
+                loop=asyncio.get_running_loop(); children=[]; calls=[]; clips=[]
+                first=True
+
+                def transcribe(path):
+                    nonlocal first
+                    clips.append(path)
+                    if first and boundary=='native':
+                        first=False
+                        loop.call_soon_threadsafe(started.set)
+                        try:
+                            if not release.wait(3): raise RuntimeError('synthetic_release_timeout')
+                            self.assertTrue(path.exists(), 'live native worker lost clip')
+                        finally: native_done.set()
+                    return 'synthetic transcript'
+
+                async def answer(text, history, dispatch=None):
+                    if boundary=='dispatch' and not calls:
+                        return (await dispatch('ha_call_service', {}))['reply']
+                    return 'normal followup'
+
+                async def dispatch(name, args, claim):
+                    self.assertTrue(await claim({'name':name,'arguments':args}))
+                    calls.append(name); started.set()
+                    await asyncio.Event().wait()
+
+                async def speak(text, path):
+                    nonlocal first
+                    if first and boundary=='tts':
+                        first=False
+                        await VoiceRuntime.speak(adapter, text, path)
+                    else: path.write_bytes(b'synthetic audio')
+
+                real_spawn=asyncio.create_subprocess_exec
+                async def spawn(*args, **kwargs):
+                    output=Path(args[args.index('--output')+1])
+                    proc=await real_spawn(sys.executable, '-c',
+                        'import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); '
+                        f'pathlib.Path({str(output)!r}).write_bytes(b"partial"); time.sleep(30)',
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    children.append(proc)
+                    while not output.exists(): await asyncio.sleep(0.002)
+                    started.set()
+                    return proc
+
+                adapter.transcribe=transcribe; adapter.reply=answer; adapter.speak=speak
+                store=Store(Path(tmp)/'state.db'); store.provision('test','a'*48)
+                conversation=store.conversation('test')
+                app=make_app(store,adapter,ha=SimpleNamespace(dispatch=dispatch) if boundary=='dispatch' else None)
+                client=TestClient(TestServer(app)); await client.start_server()
+                buf=io.BytesIO()
+                with wave.open(buf,'wb') as wav:
+                    wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+                    wav.writeframes(b'\0\0'*16000)
+                headers={'Authorization':'Bearer '+'a'*48,'Content-Type':'audio/wav',
+                         'X-Conversation':conversation,'Idempotency-Key':'first'}
+                closing=None
+                try:
+                    with patch.object(module.asyncio,'create_subprocess_exec',spawn), \
+                         patch.object(module,'TTS_TERMINATE_GRACE',0.02):
+                        response=await client.post('/v1/turns',data=buf.getvalue(),headers=headers)
+                        self.assertEqual(response.status,202); turn=(await response.json())['turn']
+                        await asyncio.wait_for(started.wait(),1)
+                        expected='uncertain' if boundary=='dispatch' else 'cancelled'
+                        for _ in range(2):
+                            response=await client.post('/v1/turns/'+turn+'/cancel',json={},headers=headers)
+                            self.assertEqual((await response.json())['state'],expected)
+                        replay=await client.post('/v1/turns',data=buf.getvalue(),headers=headers)
+                        self.assertEqual((await replay.json())['turn'],turn)
+                        if boundary=='native':
+                            busy=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'busy'})
+                            self.assertEqual((await busy.json())['error'],'voice_worker_busy')
+                            self.assertFalse(native_done.is_set()); self.assertTrue(clips[0].exists())
+                            closing=asyncio.create_task(client.close())
+                            await asyncio.sleep(0.02)
+                            self.assertFalse(closing.done(), 'cleanup abandoned native owner')
+                            release.set(); await asyncio.wait_for(closing,1)
+                            self.assertTrue(native_done.is_set()); self.assertFalse(clips[0].exists())
+                            # Same app/Store, new synthetic transport after cleanup.
+                            client=TestClient(TestServer(app)); await client.start_server()
+                        else:
+                            async with asyncio.timeout(1):
+                                while list((Path(tmp)/'media').iterdir()): await asyncio.sleep(0.002)
+                        self.assertFalse((Path(tmp)/'media'/(turn+'.mp3')).exists())
+                        self.assertTrue(all(p.returncode is not None for p in children))
+                        if boundary=='dispatch':
+                            row=store.get('test',turn)
+                            self.assertIn('outcome unknown',row['detail'])
+                            store.recover(); self.assertEqual(store.get('test',turn),row)
+                            blocked=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'blocked'})
+                            self.assertEqual((await blocked.json())['error'],'conversation_busy_or_uncertain')
+                            self.assertEqual(store.db.execute('SELECT count(*) FROM dispatches').fetchone()[0],1)
+                            headers['X-Conversation']=store.conversation('test')
+                        response=await client.post('/v1/turns',data=buf.getvalue(),headers={**headers,'Idempotency-Key':'followup'})
+                        self.assertEqual(response.status,202); followup=(await response.json())['turn']
+                        async with asyncio.timeout(1):
+                            while store.get('test',followup)['state']!='done': await asyncio.sleep(0.002)
+                        self.assertEqual(store.get('test',followup)['detail'],'normal followup')
+                        self.assertEqual(store.get('test',turn)['state'],expected)
+                        self.assertEqual(len(calls),1 if boundary=='dispatch' else 0)
+                finally:
+                    release.set()
+                    if closing: await closing
+                    await client.close(); store.close()
+                    for child in children:
+                        if child.returncode is None: child.kill()
+                        await child.wait()
 
 
 class TTSTests(unittest.IsolatedAsyncioTestCase):
