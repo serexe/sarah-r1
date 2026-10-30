@@ -12,6 +12,9 @@ import android.os.Handler
 import android.os.Looper
 
 class Playback(private val context:Context,private val onDone:(Boolean)->Unit):AudioPlayback {
+ @Volatile private var metered:ReplyResource?=null
+ internal fun amplitude():Float=metered?.amplitude() ?: 0f
+ internal fun clearMeter() {metered?.clearMeter()}
  private val manager=context.getSystemService(AudioManager::class.java)
  private val main=Handler(Looper.getMainLooper())
  private val completed:(Boolean)->Unit={success->main.post {onDone(success)}}
@@ -20,19 +23,30 @@ class Playback(private val context:Context,private val onDone:(Boolean)->Unit):A
  @Volatile internal var eligibility:()->Boolean={true}
  private val attributes=AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
  override fun play(bytes:ByteArray) {
-  check(ownership.play({eligibility()}) {id->ReplyResource(bytes,id)}) {"Playback cancelled"}
+  check(ownership.play({eligibility()}) {id->ReplyResource(bytes,id).also {metered=it}}) {"Playback cancelled"}
  }
- override fun stop() {ownership.stop()}
- internal fun stopAcknowledgement()=ownership.stop()
+ override fun stop() {clearMeter();ownership.stop()}
+ internal fun stopAcknowledgement():java.util.concurrent.CompletableFuture<Boolean> {clearMeter();return ownership.stop()}
  private companion object {
   val cleanupExecutor=java.util.concurrent.Executors.newCachedThreadPool {r->Thread(r,"sarah-playback-release").apply {isDaemon=true}}
  }
  internal suspend fun stopAndAwait():Boolean {
+  clearMeter()
   return CommandCleanup.await(null,{true},ownership.stop())
  }
  /** Holder is assigned before initialization: every partially initialized resource is reclaimed. */
  private inner class ReplyResource(private val bytes:ByteArray,private val id:Long):PlaybackOwnership.Resource {
-  private var player:MediaPlayer?=null
+  @Volatile private var player:MediaPlayer?=null
+  @Volatile private var envelope:ReplyEnvelope?=null
+  @Volatile private var closed=false
+  @Synchronized fun clearMeter() {envelope?.close();envelope=null}
+  @Synchronized fun amplitude():Float {
+   if(closed) return 0f
+   val p=player ?: return 0f
+   if(!runCatching {p.isPlaying}.getOrDefault(false)) return 0f
+   val e=envelope ?: ReplyEnvelope(bytes).also {envelope=it;it.request()}
+   return e.at(runCatching {p.currentPosition}.getOrDefault(0))
+  }
   private var source:MediaDataSource?=null
   private var focus:AudioFocusRequest?=null
   private var acquired=false
@@ -67,6 +81,8 @@ class Playback(private val context:Context,private val onDone:(Boolean)->Unit):A
   override fun prepare() {player!!.prepare()}
   override fun start() {player!!.start()}
   override fun close():Boolean {
+   closed=true;clearMeter()
+   if(metered===this) metered=null
    val p=player;player=null
    runCatching {p?.stop()}
    val released=runCatching {p?.release()}.isSuccess

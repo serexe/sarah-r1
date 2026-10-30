@@ -217,14 +217,7 @@ class MainActivity:ComponentActivity() {
   Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp,vertical=24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
    Text("VOICE COMPANION",style=MaterialTheme.typography.labelSmall,letterSpacing=2.sp,color=MaterialTheme.colorScheme.primary)
    Spacer(Modifier.height(28.dp))
-   Box(Modifier.size(170.dp,188.dp).border(1.dp,Color(0xff4b405d),RoundedCornerShape(85.dp)),contentAlignment=Alignment.Center) {
-    Box(Modifier.size(146.dp,164.dp).border(1.dp,Color(0xff352e43),RoundedCornerShape(75.dp)),contentAlignment=Alignment.Center) {
-     Image(painterResource(R.drawable.sarah_portrait),contentDescription="Sarah",modifier=Modifier.size(100.dp).clip(CircleShape))
-    }
-    Surface(color=Color(0xff6e5a88),shape=RoundedCornerShape(20.dp),modifier=Modifier.align(Alignment.BottomCenter).offset(y=10.dp)) {
-     Text(if(ui.phase=="playing" || ui.phase=="recording") "▂ ▆ █ ▆ ▂" else "• • •",color=Color.White,modifier=Modifier.padding(horizontal=14.dp,vertical=6.dp),style=MaterialTheme.typography.labelMedium)
-    }
-   }
+   CompanionWaveform(ui.phase,vm)
    Spacer(Modifier.height(34.dp))
    Text(state,color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.titleSmall)
    Spacer(Modifier.height(12.dp))

@@ -42,6 +42,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private var healthState="idle"
  private var healthGeneration:Long?=null
  private var lastHealthFailure="none"
+ internal fun playbackAmplitude():Float=(playback as? Playback)?.amplitude() ?: 0f
+ internal fun clearPlaybackMeter() {(playback as? Playback)?.clearMeter()}
  /** Local one-shot metadata. Never include Ui.status, state, exception message, or server data. */
  internal fun diagnosticSnapshot(versionCode:Long):String {
   val u=_ui.value
