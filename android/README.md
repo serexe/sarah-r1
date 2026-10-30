@@ -1,6 +1,6 @@
 # S.A.R.A.H Android
 
-Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory is a **sanitized source snapshot**, not a new APK release or a claim that these exact source bytes produced a previously tested APK. The repository's existing `app/` remains the separate Ubuntu Touch client.
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory now carries the cumulative **[Android golden v36](../SARAH_BASELINE.md)** source, evolved from the original sanitized snapshot. The exact approved APK is a signed local-review/debug build, not production-signed; source-tree identity and pending device checks are recorded in the baseline. The repository's existing `app/` remains the separate Ubuntu Touch client.
 
 ## Included source
 
@@ -8,7 +8,7 @@ Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This director
 - Android assistant-role entry points and an explicitly enabled foreground-microphone service for local “Hey Sarah” detection.
 - Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-The declared source version is `0.1.29-persistent-wake-review` (version code `30`), package `com.serexe.sarah`. These are source declarations, not installed-device or tested-APK evidence. Physical-phone black-screen behavior, battery use and wake reliability are not established by publication.
+The current source/APK version is `0.1.36-clean-layout-review` (version code `36`), package `com.serexe.sarah`. APK identity is verified; installed-device behavior is not established by promotion. Physical-phone black-screen behavior, battery use and wake reliability are not established by publication.
 
 ## Privacy and setup
 
@@ -28,7 +28,7 @@ From this directory, the ordinary source checks are:
 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 ```
 
-These commands were **not run as part of this publication**. No rebuild, device install or service restart was performed.
+No new checks/build/install/restart were run during golden promotion. The existing v36 build log records successful debug assembly plus six focused `ReplyEnvelopeTest` checks; this does not establish full-suite, lint or physical-device proof. See the baseline for exact scope.
 
 The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent. Debug APK assembly/install therefore requires your own separately authorized private signing setup. Existing keys were not copied, read or regenerated. Do not commit signing materials. Release signing is not configured here.
 
