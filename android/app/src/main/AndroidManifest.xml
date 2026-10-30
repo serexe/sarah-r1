@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <uses-permission android:name="android.permission.INTERNET"/>
+ <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+ <uses-permission android:name="android.permission.WAKE_LOCK"/>
+ <uses-permission android:name="android.permission.VIBRATE"/>
+ <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+ <application android:name=".SarahApplication" android:label="S.A.R.A.H" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:supportsRtl="true">
+  <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:launchMode="singleTop">
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <intent-filter><action android:name="android.intent.action.ASSIST"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+  </activity>
+  <service android:name=".HeySarahListenerService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false"/>
+  <service android:name=".SarahVoiceInteractionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION">
+   <intent-filter><action android:name="android.service.voice.VoiceInteractionService"/></intent-filter>
+   <meta-data android:name="android.voice_interaction" android:resource="@xml/voice_interaction_service"/>
+  </service>
+  <service android:name=".SarahSessionService" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION"/>
+  <service android:name=".SarahRecognitionService" android:exported="true" android:permission="android.permission.BIND_SPEECH_RECOGNIZER">
+   <intent-filter><action android:name="android.speech.RecognitionService"/></intent-filter>
+  </service>
+ </application>
+</manifest>
