@@ -3,7 +3,7 @@ package com.serexe.sarah
 import android.animation.ValueAnimator
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -27,9 +27,11 @@ import kotlin.math.sin
 internal const val WAVEFORM_CANVAS_HEIGHT_DP=324f
 /** Twice v34's visual displacement at every valid level; silence stays exactly flat. */
 internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*152f
+// Preserve v35 gain when space permits; scale geometry, never audio, on short screens.
+internal fun waveformRenderScale(heightDp:Float):Float=((heightDp/2f-9f)/152f).coerceIn(0f,1f)
 
 /** Only presence animates. Status, transcript and Stop keep their own stationary layout. */
-@Composable internal fun CompanionWaveform(phase:String,vm:SarahViewModel) {
+@Composable internal fun CompanionWaveform(phase:String,vm:SarahViewModel,modifier:Modifier=Modifier) {
  val lifecycle=LocalLifecycleOwner.current.lifecycle
  var tick by remember {mutableFloatStateOf(0f)}
  var amplitude by remember {mutableFloatStateOf(0f)}
@@ -53,11 +55,12 @@ internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*1
    }
   } finally {amplitude=0f;vm.clearPlaybackMeter()}
  }
- Canvas(Modifier.fillMaxWidth().height(WAVEFORM_CANVAS_HEIGHT_DP.dp).clipToBounds().semantics {
+ Canvas(modifier.fillMaxWidth().clipToBounds().semantics {
   contentDescription=when {speaking->"Speaking voice waveform";listening->"Listening gentle pulse";thinking->"Thinking slow wave";else->"Ready settled wave"}
  }) {
   val gradient=Brush.horizontalGradient(listOf(Color(0x08b59be5),Color(0xffbf9ef1),Color(0xffeadbff),Color(0xffb59be5),Color(0x08b59be5)))
   val path=Path();val echo=Path()
+  val geometryScale=waveformRenderScale(size.height/density)
   fun trace(p:Path,offset:Float) {
    for(i in 0..160) {
     val u=i/160f
@@ -69,7 +72,7 @@ internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*1
      else->sin(u*PI*6+offset)
     }
     val x=size.width*(.04f+.92f*u)
-    val y=size.height/2+amount.dp.toPx()*taper*wave.toFloat()
+    val y=size.height/2+amount.dp.toPx()*geometryScale*taper*wave.toFloat()
     if(i==0) p.moveTo(x,y) else p.lineTo(x,y)
    }
   }

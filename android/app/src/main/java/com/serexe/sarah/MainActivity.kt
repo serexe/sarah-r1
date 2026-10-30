@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
@@ -109,6 +110,8 @@ class MainActivity:ComponentActivity() {
  val ui by vm.ui.collectAsStateWithLifecycle();val context=LocalContext.current
  var showSettings by rememberSaveable { mutableStateOf(false) }
  var showAbout by rememberSaveable { mutableStateOf(false) }
+ var advanced by rememberSaveable { mutableStateOf(false) }
+ var confirmClear by remember { mutableStateOf(false) }
  BackHandler(enabled=showAbout || showSettings) {if(showAbout) showAbout=false else showSettings=false}
  var url by remember { mutableStateOf("") };var token by remember { mutableStateOf("") };var ca by remember { mutableStateOf<ByteArray?>(null) }
  var caStatus by remember { mutableStateOf("System trust only") }
@@ -137,12 +140,18 @@ class MainActivity:ComponentActivity() {
    if(showAbout) AboutPage(context,vm) {showAbout=false}
    else if(showSettings || !ui.hasConfig) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp)) {
     if(ui.hasConfig) TextButton(onClick={showSettings=false},modifier=Modifier.heightIn(min=48.dp)) {Text("‹ Back to Sarah")}
-    Header(ui,{confirmNew=true},{vm.clearLocal()},{confirmReset=true},{showAbout=true})
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+     Text("Settings",style=MaterialTheme.typography.titleLarge,modifier=Modifier.weight(1f))
+     TextButton(onClick={showAbout=true}) {Text("About")}
+    }
+    Text("Connection",style=MaterialTheme.typography.titleMedium)
     Status(ui)
+    if(ui.hasConfig) OutlinedButton(onClick=vm::reconnect,modifier=Modifier.heightIn(min=48.dp)) {Text("Check connection")}
+    Spacer(Modifier.height(12.dp))
+    Text("Voice & listener",style=MaterialTheme.typography.titleMedium)
     AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole)
     ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
     if(!ui.hasConfig) Column {
-     Spacer(Modifier.height(16.dp));Text("Your private voice companion",style=MaterialTheme.typography.headlineMedium)
      Text("Enter HTTPS bridge origin and separate revocable Android device token. No provider or smart-home credentials.",color=fg)
      Spacer(Modifier.height(18.dp))
      OutlinedTextField(url,{url=it},label={Text("HTTPS bridge address")},placeholder={Text("https://companion.example.invalid")},singleLine=true,modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri))
@@ -155,7 +164,16 @@ class MainActivity:ComponentActivity() {
      Spacer(Modifier.height(12.dp))
      Button(onClick={vm.configure(url,token,ca)},modifier=Modifier.fillMaxWidth().heightIn(min=60.dp)) {Text("Save & connect")}
      if(ui.status.startsWith("Secure storage unavailable")) TextButton(onClick={confirmReset=true}) {Text("Reset inaccessible local pairing")}
-    } else ActionPanel(ui,vm,{mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,{ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}"))) })
+    }
+    TextButton(onClick={advanced=!advanced},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text(if(advanced) "Advanced ⌄" else "Advanced ›")}
+    if(advanced) Column {
+     TextButton(onClick={context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}")))},modifier=Modifier.heightIn(min=48.dp)) {Text("Android app permissions")}
+     if(ui.hasConfig) {
+      TextButton(onClick={confirmNew=true},modifier=Modifier.heightIn(min=48.dp)) {Text("New server conversation…")}
+      TextButton(onClick={confirmClear=true},modifier=Modifier.heightIn(min=48.dp)) {Text("Clear local history…")}
+      TextButton(onClick={confirmReset=true},modifier=Modifier.heightIn(min=48.dp)) {Text("Reset local pairing…")}
+     }
+    }
    } else CompanionScreen(ui,listener,vm,{showSettings=true},startListener,
     {HeySarahListenerService.stop(context);vm.discard()},
     {mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,
@@ -171,6 +189,7 @@ class MainActivity:ComponentActivity() {
     }
    }) {Text("Enable until Stop")}},dismissButton={TextButton(onClick={listenerConsent=false}) {Text("Not now")}})
    if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("New server conversation?")},text={Text("Recording will be discarded. Pending server work may continue; this will not undo actions. A separate conversation is created.")},confirmButton={TextButton(onClick={confirmNew=false;vm.newConversation()}) {Text("Create new")}},dismissButton={TextButton(onClick={confirmNew=false}) {Text("Keep current")}})
+   if(confirmClear) AlertDialog(onDismissRequest={confirmClear=false},title={Text("Clear local history?")},text={Text("Only this device's visible transcript is cleared. Server conversations, pending work, and actions are not deleted or undone.")},confirmButton={TextButton(onClick={confirmClear=false;vm.clearLocal()}) {Text("Clear local history")}},dismissButton={TextButton(onClick={confirmClear=false}) {Text("Keep")}})
    if(confirmReset) AlertDialog(onDismissRequest={confirmReset=false},title={Text("Clear local pairing?")},text={Text("Local token, transcript, and request identity will be erased. Server conversations and actions are not deleted. Ask bridge administrator for a new device token.")},confirmButton={TextButton(onClick={confirmReset=false;vm.resetPairing()}) {Text("Clear pairing")}},dismissButton={TextButton(onClick={confirmReset=false}) {Text("Keep")}})
   }
  }
@@ -195,17 +214,6 @@ class MainActivity:ComponentActivity() {
   "uncertain" -> "Outcome uncertain"
   else -> "Connecting"
  }
- val latest=ui.transcript.lastOrNull()?.takeIf {it.first!="YOU" && ui.phase in setOf("playing","done","ready","reply_audio_pending")}?.second
- val headline=when(ui.phase) {
-  "recording" -> "I'm listening."
-  "polling" -> "Your request is in progress."
-  "finalizing","uploading" -> "Sending your request."
-  "reply_audio_pending" -> "Your reply is ready."
-  "confirming" -> "Review before continuing."
-  "cancelling" -> "Waiting for stop result."
-  "error","uncertain" -> "See exchange details."
-  else -> if(ui.canCapture) "How can I help?" else "Check connection in settings."
- }
  Column(Modifier.fillMaxSize()) {
   Row(Modifier.fillMaxWidth().padding(start=24.dp,end=12.dp,top=12.dp),verticalAlignment=Alignment.CenterVertically) {
    Column(Modifier.weight(1f)) {
@@ -214,34 +222,26 @@ class MainActivity:ComponentActivity() {
    }
    TextButton(onClick=onSettings,modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp).semantics {contentDescription="Connection and settings"}) {Text("⚙",fontSize=24.sp)}
   }
-  Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp,vertical=24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-   Text("VOICE COMPANION",style=MaterialTheme.typography.labelSmall,letterSpacing=2.sp,color=MaterialTheme.colorScheme.primary)
-   Spacer(Modifier.height(28.dp))
-   CompanionWaveform(ui.phase,vm)
-   Spacer(Modifier.height(34.dp))
-   Text(state,color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.titleSmall)
-   Spacer(Modifier.height(12.dp))
-   Text(latest ?: headline,style=MaterialTheme.typography.headlineMedium,textAlign=TextAlign.Center,maxLines=4,overflow=TextOverflow.Ellipsis)
-   Spacer(Modifier.height(22.dp))
-   Box(Modifier.widthIn(max=340.dp)) {ActionPanel(ui,vm,onMic,denied,onPermissions)}
-   if(ui.phase in setOf("finalizing","uploading","reply_audio_pending","cancelling","creating")) {
-    OutlinedButton(onClick={},enabled=false,modifier=Modifier.heightIn(min=48.dp)) {Text("■ Stop unavailable during $state")}
+  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal=24.dp,vertical=8.dp)) {
+   val actionMaxHeight=maxHeight*.70f
+   Column(Modifier.fillMaxSize(),horizontalAlignment=Alignment.CenterHorizontally) {
+    Text(state,color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.titleSmall)
+    CompanionWaveform(ui.phase,vm,Modifier.weight(1f).fillMaxWidth())
+    // Only exceptional/large-font action content scrolls. No outer screen scrolling.
+    Column(Modifier.widthIn(max=340.dp).heightIn(max=actionMaxHeight).verticalScroll(rememberScrollState())) {
+     if(ui.phase=="error") Text(ui.status,style=MaterialTheme.typography.bodySmall)
+     ActionPanel(ui,vm,onMic,denied,onPermissions)
+     if(ui.phase in setOf("finalizing","uploading","reply_audio_pending","cancelling","creating")) {
+      OutlinedButton(onClick={},enabled=false,modifier=Modifier.heightIn(min=48.dp)) {Text("■ Stop unavailable during $state")}
+     }
+    }
    }
-   if(ui.phase=="playing") Text("Talk after reply",style=MaterialTheme.typography.bodySmall,color=Color(0xffb9b1c7))
   }
   Surface(shape=RoundedCornerShape(topStart=26.dp,topEnd=26.dp),color=MaterialTheme.colorScheme.surface) {
    Column(Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=8.dp)) {
     TextButton(onClick={expanded=!expanded},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {
-     Text("Latest exchange & details",modifier=Modifier.weight(1f),textAlign=TextAlign.Start)
+     Text("History",modifier=Modifier.weight(1f),textAlign=TextAlign.Start)
      Text(if(expanded) "⌄" else "›")
-    }
-    if(expanded) Column(Modifier.heightIn(max=220.dp).verticalScroll(rememberScrollState())) {
-     if(ui.transcript.isEmpty()) Text("No local exchange yet.",style=MaterialTheme.typography.bodySmall)
-     ui.transcript.forEach { (who,text) ->
-      Text(if(who=="YOU") "You" else "Sarah",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
-      Text(text,style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(bottom=12.dp))
-     }
-     Text(ui.status,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(bottom=12.dp))
     }
     HorizontalDivider(color=Color(0xff393143))
     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
@@ -251,12 +251,28 @@ class MainActivity:ComponentActivity() {
    }
   }
  }
+ if(expanded) Dialog(onDismissRequest={expanded=false}) {
+  Surface(shape=RoundedCornerShape(24.dp),modifier=Modifier.fillMaxWidth().fillMaxHeight(.8f)) {
+   Column(Modifier.padding(16.dp)) {
+    Row(verticalAlignment=Alignment.CenterVertically) {
+     Text("History",style=MaterialTheme.typography.titleLarge,modifier=Modifier.weight(1f))
+     TextButton(onClick={expanded=false},modifier=Modifier.heightIn(min=48.dp)) {Text("Close")}
+    }
+    LazyColumn(Modifier.weight(1f).fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+     if(ui.transcript.isEmpty()) item {Text("No local exchange yet.")}
+     items(ui.transcript) { (who,text) -> Column {
+      Text(if(who=="YOU") "You" else "Sarah",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+      Text(text,style=MaterialTheme.typography.bodyMedium)
+     } }
+     item {Text(ui.status,style=MaterialTheme.typography.bodySmall)}
+    }
+   }
+  }
+ }
 }
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
  Column {
-  Text("Hey Sarah: $state · persistent microphone foreground service until Stop. Unlocked offscreen wake ends after an adaptive 1.6–3.2-second speech pause (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
-  val context=LocalContext.current
-  Text("Local stages (no content): ${StageTrail.read(context).lines().takeLast(3).joinToString(" · ")}",style=MaterialTheme.typography.bodySmall)
+  Text("Hey Sarah: $state · microphone stays on until Stop. Locked wake notifies only. Black-screen behavior unverified.",style=MaterialTheme.typography.bodySmall)
   if(state=="off") {
    OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent Hey Sarah")}
    if(permissionReady) Text("Microphone permission granted. Tap Enable Hey Sarah again to start listening.",style=MaterialTheme.typography.bodySmall)
@@ -301,34 +317,10 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
   diagnostic?.let {Text(it,style=MaterialTheme.typography.bodySmall)}
  }
 }
-@Composable private fun Header(ui:SarahViewModel.Ui,onNew:()->Unit,onClear:()->Unit,onReset:()->Unit,onAbout:()->Unit) {
- Column(Modifier.fillMaxWidth().padding(top=12.dp)) {
-  Row(verticalAlignment=Alignment.CenterVertically) {
-   Text("◉",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.headlineLarge,modifier=Modifier.semantics {contentDescription="S.A.R.A.H microphone mark"})
-   Spacer(Modifier.width(9.dp))
-   Column(Modifier.weight(1f)) {Text("S.A.R.A.H",style=MaterialTheme.typography.titleLarge);Text("Voice companion",style=MaterialTheme.typography.labelSmall)}
-   if(ui.hasConfig) TextButton(onClick=onNew,modifier=Modifier.heightIn(min=48.dp)) {Text("＋ New")}
-   TextButton(onClick=onAbout,modifier=Modifier.heightIn(min=48.dp)) {Text("About")}
-  }
-  if(ui.hasConfig) Row(Modifier.fillMaxWidth()) {
-   TextButton(onClick=onClear,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("Clear local",maxLines=2)}
-   TextButton(onClick=onReset,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("Connection settings",maxLines=2)}
-  }
- }
-}
 @Composable private fun Status(ui:SarahViewModel.Ui) {
  val text="${ui.phase.replaceFirstChar {it.uppercase()}} · ${ui.status}"
  Surface(tonalElevation=2.dp,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().padding(vertical=10.dp)) {
   Text(text,modifier=Modifier.padding(12.dp).semantics {contentDescription="Status: $text"},style=MaterialTheme.typography.bodyMedium)
- }
-}
-@Composable private fun Thread(ui:SarahViewModel.Ui,modifier:Modifier=Modifier) {
- LazyColumn(modifier.fillMaxWidth(),contentPadding=PaddingValues(vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-  if(ui.transcript.isEmpty()) item {Text("Conversation · tap to talk when connected. Server history remains after local clearing.",style=MaterialTheme.typography.bodyMedium)}
-  items(ui.transcript) { (who,text) ->Column {
-   Text(who,color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.labelLarge)
-   Surface(shape=RoundedCornerShape(15.dp),tonalElevation=2.dp,modifier=Modifier.fillMaxWidth()) {Text(text,modifier=Modifier.padding(14.dp),style=MaterialTheme.typography.bodyLarge)}
-  } }
  }
 }
 @Composable private fun ActionPanel(ui:SarahViewModel.Ui,vm:SarahViewModel,onMic:()->Unit,denied:Boolean,onSettings:()->Unit) {

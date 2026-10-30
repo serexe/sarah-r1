@@ -19,6 +19,17 @@ class ReplyEnvelopeTest {
   assertEquals(152f,speakingWaveformHeightDp(1f),0f)
   assertEquals(152f,speakingWaveformHeightDp(2f),0f)
  }
+ @Test fun adaptiveRenderGeometryFitsShortAndNormalCanvasWithoutClampingLevels() {
+  for(height in 18..900) {
+   val scale=waveformRenderScale(height.toFloat())
+   assertTrue(scale in 0f..1f)
+   assertTrue(speakingWaveformHeightDp(1f)*scale+9f<=height/2f+.0001f)
+   assertEquals(0f,speakingWaveformHeightDp(0f)*scale,0f)
+  }
+  assertEquals(1f,waveformRenderScale(324f),0f)
+  assertEquals(1f,waveformRenderScale(500f),0f)
+  assertTrue(waveformRenderScale(180f)<1f)
+ }
  private fun pcm(value:Short)=ByteBuffer.allocate(640).order(ByteOrder.LITTLE_ENDIAN).apply {repeat(320) {putShort(value)};flip()}
  @Test fun silenceRemainsZeroAndRealPcmRaisesEnvelopeAtCorrectPosition() {
   val bins=PcmEnvelopeBins()
