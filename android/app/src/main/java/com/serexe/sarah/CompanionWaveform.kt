@@ -22,6 +22,9 @@ import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.sin
 
+/** Twice v33's visual height only; real silence stays flat and peaks fit the canvas. */
+internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*76f
+
 /** Only presence animates. Status, transcript and Stop keep their own stationary layout. */
 @Composable internal fun CompanionWaveform(phase:String,vm:SarahViewModel) {
  val lifecycle=LocalLifecycleOwner.current.lifecycle
@@ -56,7 +59,7 @@ import kotlin.math.sin
    for(i in 0..160) {
     val u=i/160f
     val taper=sin(PI*u).coerceAtLeast(0.0).pow(1.8).toFloat()
-    val amount=when {speaking->amplitude*38f;listening->7f*(.82f+.18f*sin(tick*1.8f));thinking->13f;else->2.5f}
+    val amount=when {speaking->speakingWaveformHeightDp(amplitude);listening->7f*(.82f+.18f*sin(tick*1.8f));thinking->13f;else->2.5f}
     val wave=when {
      speaking->.60*sin(u*PI*8-tick*3+offset)+.27*sin(u*PI*14+tick*4+offset)+.13*sin(u*PI*20-tick*5)
      thinking->sin(u*PI*4-tick*.8f+offset)

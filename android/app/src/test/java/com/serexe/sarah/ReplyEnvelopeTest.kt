@@ -6,6 +6,17 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class ReplyEnvelopeTest {
+ @Test fun speakingVisualGainDoublesHeightPreservesZeroAndClampsBounds() {
+  assertEquals(0f,speakingWaveformHeightDp(0f),0f)
+  for(level in listOf(.05f,.1f,.25f,.5f)) {
+   assertEquals(level*38f*2f,speakingWaveformHeightDp(level),.0001f)
+   assertTrue(speakingWaveformHeightDp(level)>level*38f)
+   assertTrue(speakingWaveformHeightDp(level)<76f)
+  }
+  assertEquals(0f,speakingWaveformHeightDp(-1f),0f)
+  assertEquals(76f,speakingWaveformHeightDp(1f),0f)
+  assertEquals(76f,speakingWaveformHeightDp(2f),0f)
+ }
  private fun pcm(value:Short)=ByteBuffer.allocate(640).order(ByteOrder.LITTLE_ENDIAN).apply {repeat(320) {putShort(value)};flip()}
  @Test fun silenceRemainsZeroAndRealPcmRaisesEnvelopeAtCorrectPosition() {
   val bins=PcmEnvelopeBins()
