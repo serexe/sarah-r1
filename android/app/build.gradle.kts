@@ -13,7 +13,7 @@ android {
    keyPassword = storePassword
   }
  }
- defaultConfig { applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 34; versionName = "0.1.34-waveform-gain-review"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a", "x86_64") } }
+ defaultConfig { applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 35; versionName = "0.1.35-waveform-gain2-review"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a", "x86_64") } }
  buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("localReview") }; release { isMinifyEnabled = false } }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }

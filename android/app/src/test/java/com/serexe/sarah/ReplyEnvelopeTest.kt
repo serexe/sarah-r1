@@ -6,16 +6,18 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class ReplyEnvelopeTest {
- @Test fun speakingVisualGainDoublesHeightPreservesZeroAndClampsBounds() {
+ @Test fun speakingVisualGainDoublesV34WithoutClippingAndPreservesZero() {
   assertEquals(0f,speakingWaveformHeightDp(0f),0f)
-  for(level in listOf(.05f,.1f,.25f,.5f)) {
-   assertEquals(level*38f*2f,speakingWaveformHeightDp(level),.0001f)
-   assertTrue(speakingWaveformHeightDp(level)>level*38f)
-   assertTrue(speakingWaveformHeightDp(level)<76f)
+  for(step in 0..1000) {
+   val level=step/1000f
+   assertEquals(level*76f*2f,speakingWaveformHeightDp(level),.0001f)
+   // Taper <= 1 and absolute wave <= .60 + .27 + .13 = 1.
+   // Thus this includes every time, both paths and the widest 18dp stroke.
+   assertTrue(speakingWaveformHeightDp(level)+9f<=WAVEFORM_CANVAS_HEIGHT_DP/2f)
   }
   assertEquals(0f,speakingWaveformHeightDp(-1f),0f)
-  assertEquals(76f,speakingWaveformHeightDp(1f),0f)
-  assertEquals(76f,speakingWaveformHeightDp(2f),0f)
+  assertEquals(152f,speakingWaveformHeightDp(1f),0f)
+  assertEquals(152f,speakingWaveformHeightDp(2f),0f)
  }
  private fun pcm(value:Short)=ByteBuffer.allocate(640).order(ByteOrder.LITTLE_ENDIAN).apply {repeat(320) {putShort(value)};flip()}
  @Test fun silenceRemainsZeroAndRealPcmRaisesEnvelopeAtCorrectPosition() {

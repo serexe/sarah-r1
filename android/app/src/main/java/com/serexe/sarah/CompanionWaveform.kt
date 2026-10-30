@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -22,8 +23,10 @@ import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.sin
 
-/** Twice v33's visual height only; real silence stays flat and peaks fit the canvas. */
-internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*76f
+// Reserve both 152dp excursions plus the 9dp half-width of the widest glow stroke.
+internal const val WAVEFORM_CANVAS_HEIGHT_DP=324f
+/** Twice v34's visual displacement at every valid level; silence stays exactly flat. */
+internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*152f
 
 /** Only presence animates. Status, transcript and Stop keep their own stationary layout. */
 @Composable internal fun CompanionWaveform(phase:String,vm:SarahViewModel) {
@@ -50,7 +53,7 @@ internal fun speakingWaveformHeightDp(level:Float):Float=level.coerceIn(0f,1f)*7
    }
   } finally {amplitude=0f;vm.clearPlaybackMeter()}
  }
- Canvas(Modifier.fillMaxWidth().height(188.dp).semantics {
+ Canvas(Modifier.fillMaxWidth().height(WAVEFORM_CANVAS_HEIGHT_DP.dp).clipToBounds().semantics {
   contentDescription=when {speaking->"Speaking voice waveform";listening->"Listening gentle pulse";thinking->"Thinking slow wave";else->"Ready settled wave"}
  }) {
   val gradient=Brush.horizontalGradient(listOf(Color(0x08b59be5),Color(0xffbf9ef1),Color(0xffeadbff),Color(0xffb59be5),Color(0x08b59be5)))
