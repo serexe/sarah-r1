@@ -1,5 +1,6 @@
 # Private local configuration, credentials, output and tooling state
 .local-review/
+.local-review
 .gradle/
 .gradle-cache/
 .kotlin/

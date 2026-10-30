@@ -116,6 +116,25 @@ class ACPRuntime(VoiceRuntime):
         # Never inherit VoiceRuntime's direct Codex route, even if mis-called.
         raise ACPError(self.reason)
 
+    def _direct_rows(self, device, conversation):
+        if not self.store.db.execute("SELECT 1 FROM sqlite_master WHERE name='response_metrics'").fetchone():
+            return []
+        return self.store.db.execute("""SELECT t.id,t.transcript,t.detail FROM turns t
+            JOIN response_metrics m ON m.turn=t.id WHERE t.device=? AND t.conversation=?
+            AND t.state='done' AND m.route='direct_clock' ORDER BY t.rowid""",(device,conversation)).fetchall()
+
+    def check_direct_reply(self, *, device, conversation):
+        # A clock shortcut cannot evade existing migration/uncertain-session gates.
+        self.store.own(device,conversation)
+        row=self.store.db.execute('SELECT backend,state FROM acp_sessions WHERE device=? AND conversation=?',(device,conversation)).fetchone()
+        if row and (row['backend']!=self.config.identity or row['state']!='ready'):
+            raise ACPError('acp_session_uncertain_or_changed')
+        if not row:
+            local={r['id'] for r in self._direct_rows(device,conversation)}
+            prior=self.store.db.execute("SELECT id FROM turns WHERE device=? AND conversation=? AND state='done'",(device,conversation)).fetchall()
+            if any(r['id'] not in local for r in prior):
+                raise ACPError('acp_backend_requires_new_conversation')
+
     async def reply_turn(self, text, history, *, device, conversation, dispatch=None):
         # Durable binding owns ACP tool/receipt execution.
         return await self._reply_bound(text, history, device=device,
@@ -133,11 +152,18 @@ class ACPRuntime(VoiceRuntime):
             (device, conversation)).fetchone()
         if row and (row['backend'] != self.config.identity or row['state'] != 'ready'):
             raise ACPError('acp_session_uncertain_or_changed')
+        direct_rows=self._direct_rows(device,conversation)
+        local_ids={r['id'] for r in direct_rows}
         prior = self.store.db.execute(
-            "SELECT 1 FROM turns WHERE device=? AND conversation=? AND state='done' LIMIT 1",
-            (device, conversation)).fetchone()
-        if not row and (history or prior):
+            "SELECT id FROM turns WHERE device=? AND conversation=? AND state='done'",
+            (device, conversation)).fetchall()
+        if not row and ((history and not direct_rows) or any(r['id'] not in local_ids for r in prior)):
             raise ACPError('acp_backend_requires_new_conversation')
+        if direct_rows:
+            # Literal completed local dialogue; not a tool receipt or a replay.
+            import json
+            context=[{'user':r['transcript'],'assistant':r['detail']} for r in direct_rows[-4:]]
+            text='Completed local-clock dialogue (context only):\n'+json.dumps(context)+'\nCurrent user request:\n'+text
         client = None
         admitted = False
         try:

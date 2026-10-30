@@ -55,7 +55,7 @@ class SarahViewModelTest {
  private fun fixture(initial:JSONObject=persisted(),eligible:(Boolean)->Boolean={true},beforePlayback:suspend ()->Unit={},
   guardedStore:Boolean=false,loadFailure:Exception?=null,abort:()->Unit={}):Fixture {
   val memory=Memory(initial,guardedStore,loadFailure);val wire=Wire();val mic=Mic();lateinit var sound:Sound;var starts=0;var rearms=0
-  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},abort)
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},abort,awaitPollSlot={})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
  }
  @Test fun localSnapshotUsesRealLeaseReleaseAndHealthStateWithoutSensitiveFields() {

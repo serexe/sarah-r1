@@ -79,6 +79,7 @@ internal class OffscreenCommand(
   try {withTimeout(31_000L) {job.await()}}
   catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture endpoint failed")}
   c.stop()
+  val responseTiming=ResponseTiming()
   check(c.releaseComplete) {"capture release failed"}
   if(!eligible() || c.capped || !c.endpointReached || !c.speechDetected) {stage("discarded");return}
   val wav=try {c.finish()} catch (_:Exception) {stage("discarded");return}
@@ -94,17 +95,23 @@ internal class OffscreenCommand(
   val bridge=Bridge(state.getString("origin"),state.getString("token"),state.optString("ca","").takeIf {it.isNotEmpty()}?.let {android.util.Base64.decode(it,android.util.Base64.DEFAULT)})
   stage("uploading")
   if(!eligible()) return
+  responseTiming.mark("upload_start_ms")
   val turn=bridge.submitCancellable(conversation,request,wav)
+  responseTiming.mark("upload_ack_ms")
   if(!eligible()) return
   state.put("turn",turn);vault.save(state);stage("polling")
-  var delayMs=1500L
-  repeat(30) {
+  val deadline=System.nanoTime()+136_000_000_000L
+  repeat(140) { attempt ->
+   if(System.nanoTime()>=deadline) {stage("uncertain");return}
+   ResultPolling.awaitSlot()
    if(!eligible()) return
    val row=bridge.pollCancellable(turn)
    if(!eligible()) return
    if(row.optString("id")!=turn || row.optString("conversation")!=conversation) {stage("uncertain");return}
    when(row.optString("state")) {
     "done" -> {
+     responseTiming.mark("done_observed_ms")
+     state.put("responseTimings",responseTiming.snapshot(row.optJSONObject("timings")))
      // Same encrypted local conversation, no notification text or logs.
      val transcript=row.optString("transcript").take(8000)
      val detail=row.optString("detail").take(8000)
@@ -119,6 +126,7 @@ internal class OffscreenCommand(
      state.put("messages",kept).put("phase","done");vault.save(state)
      if(row.optBoolean("audio") && eligible()) {
       val bytes=bridge.audioCancellable(turn)
+      responseTiming.mark("audio_downloaded_ms")
       if(!eligible()) return
       val done=CompletableDeferred<Boolean>()
       val p=Playback(context) {done.complete(it)}
@@ -128,6 +136,8 @@ internal class OffscreenCommand(
       // Native prepare may block; never run it on the service/main dispatcher.
       val prepare=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {p.play(bytes)}
       preparing=prepare;prepare.start();prepare.await()
+      responseTiming.mark("playback_prepared_ms")
+      if(eligible()) {state.put("responseTimings",responseTiming.snapshot(row.optJSONObject("timings")));vault.save(state)}
       currentCoroutineContext().ensureActive()
       if(!eligible()) return
       stage("speaking")
@@ -141,7 +151,7 @@ internal class OffscreenCommand(
     "transcribing","thinking","acting","speaking" -> stage("polling")
     else -> {stage("uncertain");return}
    }
-   delay(delayMs);delayMs=minOf(delayMs+500,5000)
+   delay(ResultPolling.delayMs(attempt+1))
   }
   stage("uncertain")
  }

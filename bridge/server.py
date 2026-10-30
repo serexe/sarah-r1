@@ -9,10 +9,13 @@ from collections import defaultdict, deque
 from pathlib import Path
 from aiohttp import web
 from .core import BlockedHermes, Conflict, Denied, Store, validate_audio, canonical
+from .direct_clock import direct_clock
 
 
 def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None):
     adapter = adapter or BlockedHermes()
+    # Durations only; no transcript, audio, identity or upstream error logging.
+    store.db.execute('CREATE TABLE IF NOT EXISTS response_metrics(turn TEXT PRIMARY KEY, route TEXT NOT NULL, timings TEXT NOT NULL)')
     buckets=defaultdict(deque); tasks={}; confirmations={}; dispatching=set()
     media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
     @web.middleware
@@ -64,10 +67,12 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         # Also runs if Stop wins before execute's first instruction.
         clip.unlink(missing_ok=True);tasks.pop(turn,None);confirmations.pop(turn,None)
         if store.get(device,turn)['state']!='done':(media/(turn+'.mp3')).unlink(missing_ok=True)
-    async def execute(device,turn,clip):
+    async def execute(device,turn,clip,admitted,upload_ms):
         transcript=''
+        started=time.monotonic();timings={'upload_read_ms':upload_ms,'queue_ms':(started-admitted)*1000};route='model'
         try:
             transcript=await transcribe(clip)
+            timings['stt_ms']=(time.monotonic()-started)*1000
             if not active(device,turn):return
             store.finish(device,turn,'thinking','S.A.R.A.H is thinking.',transcript)
             conversation=store.get(device,turn)['conversation']
@@ -115,13 +120,21 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                 else:
                     outcomes.append(dict(outcome))
                 return outcome
-            # Every utterance reaches the model with the same supported tools.
-            # Semantic intent belongs to Codex, not a local phrase classifier.
-            if hasattr(adapter, 'reply_turn'):
+            # User-approved exception: exact standalone time/date, no tools.
+            reply_started=time.monotonic()
+            text=direct_clock(transcript)
+            if text is not None:
+                if hasattr(adapter, 'check_direct_reply'):
+                    adapter.check_direct_reply(device=device,conversation=conversation)
+                route='direct_clock'
+                store.db.execute('INSERT OR REPLACE INTO response_metrics VALUES(?,?,?)',(turn,route,'{}'))
+            elif hasattr(adapter, 'reply_turn'):
                 text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation,
                                               dispatch=dispatch if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else None)
             else:
                 text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
+            timings['reply_ms']=(time.monotonic()-reply_started)*1000
+            timings['model_ms']=timings['reply_ms'] if route=='model' else 0.0
             if not active(device,turn):return
             # Actual dispatch outcomes remain server-owned. With no tool outcome,
             # preserve conversation/clarification exactly; never invent an action
@@ -135,10 +148,12 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
             errors=[o['reply'] for o in read_results if o.get('error')]
             if errors:text+='\n'+' '.join(errors)
             store.finish(device,turn,'speaking','Preparing spoken reply',transcript)
+            tts_started=time.monotonic()
             try:await asyncio.wait_for(adapter.speak(text,media/(turn+'.mp3')),timeout=45)
             except Exception:
                 (media/(turn+'.mp3')).unlink(missing_ok=True)
                 # Text remains usable when optional free TTS unavailable.
+            timings['tts_ms']=(time.monotonic()-tts_started)*1000
             if active(device,turn):store.finish(device,turn,'done',text,transcript)
         except Exception as e:
             # Only this exact local pre-connect refusal proves no dispatch.
@@ -151,26 +166,34 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
             else:
                 detail='Voice request failed ('+type(e).__name__+'). Any dispatched action outcome may be unknown; no automatic retry.'
             if active(device,turn):store.finish(device,turn,'error',detail,transcript)
+        finally:
+            timings['server_ms']=(time.monotonic()-admitted)*1000
+            store.db.execute('INSERT OR REPLACE INTO response_metrics VALUES(?,?,?)',
+                             (turn,route,json.dumps({k:round(v,3) for k,v in timings.items()})))
 
     async def submit(request):
         if not adapter.ready:return web.json_response({'error':adapter.reason},status=503)
         if request.content_type!='audio/wav':raise Denied('audio_content_type')
         device=request['device'];conversation=request.headers.get('X-Conversation','');key=request.headers.get('Idempotency-Key','')
         store.own(device,conversation)
+        upload_started=time.monotonic()
         data=await request.read();validate_audio(data)
+        upload_ms=(time.monotonic()-upload_started)*1000
         fingerprint=hashlib.sha256(data).hexdigest()
         existing=store.db.execute('SELECT id FROM turns WHERE device=? AND request=?',(device,key)).fetchone()
         if not existing and tasks:raise Conflict('voice_worker_busy')
         turn=store.admit(device,conversation,key,fingerprint)
         if not existing:
             clip=media/(turn+'.wav');clip.touch(mode=0o600,exist_ok=False);clip.write_bytes(data)
-            task=asyncio.create_task(execute(device,turn,clip))
+            task=asyncio.create_task(execute(device,turn,clip,time.monotonic(),upload_ms))
             tasks[turn]=task
             task.add_done_callback(lambda done, d=device, t=turn, c=clip: released(d,t,c,done))
         return web.json_response({'turn':turn},status=202)
     async def poll(request):
         turn=request.match_info['turn'];result=store.get(request['device'],turn)
         result['audio']=result['state']=='done' and (media/(turn+'.mp3')).is_file()
+        metric=store.db.execute('SELECT route,timings FROM response_metrics WHERE turn=?',(turn,)).fetchone()
+        if metric:result['timings']={**json.loads(metric['timings']),'route':metric['route']}
         if turn in confirmations: result['confirmation']=confirmations[turn][2]
         return web.json_response(result)
     async def confirmation(request):

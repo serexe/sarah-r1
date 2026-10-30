@@ -23,7 +23,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private val commandEligible:(Boolean)->Boolean={true},
  private val beforePlayback:suspend ()->Unit={},
  private val rearmListener:()->Unit={},
- private val abortWindow:()->Unit={}):AndroidViewModel(app) {
+ private val abortWindow:()->Unit={},
+ private val awaitPollSlot:suspend ()->Unit={ResultPolling.awaitSlot()}):AndroidViewModel(app) {
  constructor(app:Application):this(app,Vault(app),{url,token,ca->Bridge(url,token,ca)},{interrupted->Capture(app,interrupted,true)},{done->Playback(app,done)},CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate),Dispatchers.IO,{wake->AudioEligibility.allowed(app,wake)},{HeySarahListenerService.awaitIdle()},{HeySarahListenerService.start(app,true,true)},{HeySarahListenerService.stop(app)})
  data class Ui(val phase:String="disconnected",val status:String="Set up HTTPS bridge",val conversation:String?=null,val transcript:List<Pair<String,String>> = emptyList(),val hasConfig:Boolean=false,val confirmation:JSONObject?=null,val canCapture:Boolean=false)
  private val generation=AtomicLong()
@@ -34,6 +35,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private var captureJob:Job?=null
 
  private var job:Job?=null
+ private var responseTiming:ResponseTiming?=null
  private var foreground=false
  private var authenticated=false
  private var wakeCapture=false
@@ -57,7 +59,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    "listenerCleanupAck=${listenerAck ?: "absent"}","commandCleanupAck=${commandAck ?: "absent"}",
    "health=$healthState","healthGeneration=${healthGeneration ?: "none"}",
    "currentGeneration=${generation.get()}","healthCurrent=${healthState !in setOf("skippedBackground","skippedBusy","skippedNoBridge") && healthGeneration!=null && healthGeneration==generation.get()}",
-   "lastHealthFailure=$lastHealthFailure").joinToString("\n")
+   "lastHealthFailure=$lastHealthFailure","responseTimings=${state.optJSONObject("responseTimings") ?: "absent"}").joinToString("\n")
  }
  private fun healthFailure(e:Exception)=when(e) {
   is javax.net.ssl.SSLException -> "tls"
@@ -250,6 +252,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   val c=capture ?:return;val recordingJob=captureJob;val g=generation.get()
 
   show("finalizing","Finishing recording")
+  responseTiming=ResponseTiming()
   c.stop()
   job=scope.launch {
    try {recordingJob?.join()} catch (_:CancellationException) {c.discard();return@launch}
@@ -263,7 +266,9 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    try {save();show("uploading","Sending recording (outcome may be uncertain)")}
    catch (_:Exception) { _ui.value=_ui.value.copy(phase="error",status="Cannot securely save request; nothing sent");return@launch }
    try {
+   responseTiming?.mark("upload_start_ms")
    val turn=withContext(io) {bridge!!.submit(conversation,request,wav)}
+   responseTiming?.mark("upload_ack_ms")
    if(!owner(g,conversation,request)) return@launch
    state.put("turn",turn);show("polling","Processing · turn admitted; waiting for server")
    poll(g,conversation,request,turn)
@@ -271,13 +276,15 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   }
  }
  private suspend fun poll(g:Long,c:String,r:String,turn:String) {
-  var delayMs=1500L;var attempts=0
-  while(owner(g,c,r) && attempts++<50) {
+  var attempts=0;val deadline=System.nanoTime()+236_000_000_000L
+  while(owner(g,c,r) && System.nanoTime()<deadline && attempts++<240) {
+   awaitPollSlot()
+   if(!owner(g,c,r)) return
    val row=try {withContext(io) {bridge!!.poll(turn)}} catch (e:Exception) {if(owner(g,c,r)) {wakeCapture=false;abortWindow();show("uncertain","Polling interrupted: ${safeError(e)}. Check existing request.")};return}
    if (!owner(g,c,r)) return
    if(row.optString("id")!=turn || row.optString("conversation")!=c) {show("uncertain","Server identity mismatch; no further action");return}
    applyRow(row,g,c,r);if(row.optString("state") in listOf("done","error","cancelled","uncertain","confirming")) return
-   delay(delayMs);delayMs=minOf(delayMs+500,5000)
+   delay(ResultPolling.delayMs(attempts))
   }
   if(owner(g,c,r)) {wakeCapture=false;abortWindow();show("uncertain","Polling limit reached. Check existing request later.")}
  }
@@ -286,12 +293,15 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   if(transcript.isNotBlank() && state.optString("shownTranscript")!=r) {append("YOU",transcript);state.put("shownTranscript",r);save()}
   when(stage) {
    "done" -> {
+    responseTiming?.mark("done_observed_ms")
+    responseTiming?.let {state.put("responseTimings",it.snapshot(row.optJSONObject("timings")));save()}
     if(state.optString("shownReply")!=r) { append("S.A.R.A.H",detail);state.put("shownReply",r);save() }
     show(if(row.optBoolean("audio")) "reply_audio_pending" else "done","Reply ready${if (row.optBoolean("audio")) " · audio pending" else " · text only"}")
     if(!row.optBoolean("audio")) rearmIfEligible()
     if(row.optBoolean("audio") && owner(g,c,r)) try {
      val bytes=withContext(io) {bridge!!.audio(row.getString("id"))}
-     if(owner(g,c,r)) {beforePlayback();if(owner(g,c,r)) {playback.play(bytes);show("playing","Speaking · stop audio does not cancel work")}}
+     responseTiming?.mark("audio_downloaded_ms")
+     if(owner(g,c,r)) {beforePlayback();if(owner(g,c,r)) {playback.play(bytes);responseTiming?.mark("playback_prepared_ms");responseTiming?.let {state.put("responseTimings",it.snapshot(row.optJSONObject("timings")));save()};show("playing","Speaking · stop audio does not cancel work")}}
     } catch (_:Exception) {wakeCapture=false;if(owner(g,c,r)) show("done","Reply text ready. Audio unavailable")}
    }
    "confirming" -> {
@@ -308,6 +318,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  }
  fun checkExisting() {
   if(!foreground || serviceBusy() || bridge==null || _ui.value.phase!="uncertain") return
+  responseTiming=null // A later reconciliation is not original endpoint latency.
   val c=state.optString("conversation");val r=state.optString("request")
   if(!Identity.valid(r)) { _ui.value=_ui.value.copy(status="No request identity to reconcile. New conversation available.");return }
   val g=generation.incrementAndGet();job?.cancel()
