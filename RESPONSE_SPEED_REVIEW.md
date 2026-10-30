@@ -1,4 +1,6 @@
-# Response-speed review v37 (not deployed)
+# Response-speed v37 source (user-confirmed working)
+
+Prepared v37 source is committed on public main. The user confirmed the installed v37 phone and separately activated private backend working. This is source publication only, not golden promotion: golden tag and latest release remain v36. No APK rebuild, release, installation or service restart accompanies this commit.
 
 Base: public main `01ed90f9fa740ac8e2150928057f8f82fe9bd4de`, golden v36 unchanged.
 
@@ -11,7 +13,7 @@ Base: public main `01ed90f9fa740ac8e2150928057f8f82fe9bd4de`, golden v36 unchang
 
 ## Activation boundary
 
-APK polling/local metrics can work with current bridge; direct clock and server metrics require separately approved backend deployment/restart. Do not replace live bridge directory wholesale: public snapshot and live private bridge have admission/security/config differences, not just this patch. Apply only reviewed speed delta while preserving live fixes and private configuration. No production restart, database reuse, model/provider change, install, push, release or golden promotion authorized here.
+APK polling/local metrics can work with an older bridge; direct clock and server metrics require the separately approved backend delta. The activated private bridge retains its own admission/security/config differences: do not replace it wholesale with this public snapshot. Live configuration, conversation binding, history and backups remain private and are not part of this source publication. No further production restart, database reuse, model/provider change, installation, release or golden promotion is authorized by this commit.
 
 ## Proof boundary
 
