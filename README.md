@@ -6,6 +6,12 @@ Sarah connects your device to a **self-hosted HTTPS voice bridge**. The shared b
 
 [Download Android](https://github.com/serexe/sarah-android/releases/latest) · [Get started](#get-started) · [Android source](android/README.md) · [Ubuntu Touch setup](docs/SETUP.md#native-client) · [Security](SECURITY.md)
 
+## Project home and releases
+
+**[serexe/sarah-r1](https://github.com/serexe/sarah-r1) is the maintained home for Sarah source, documentation, issues, and future releases across Android and Ubuntu Touch / R1.** Start new development here: Android source lives in `android/`; the shared bridge and native client live alongside it.
+
+The original [sarah-android repository](https://github.com/serexe/sarah-android) is retained as a read-only historical archive. Its [existing Android releases](https://github.com/serexe/sarah-android/releases), branches, tags, screenshots, and provenance records stay there; they have not been copied or reissued here. The download links below intentionally point to those historical APKs. Future releases belong to [this repository's releases](https://github.com/serexe/sarah-r1/releases); consolidation itself does not publish a new build or validate the imported Android snapshot.
+
 ## What you can do
 
 - **Talk naturally:** tap to speak, listen to spoken replies, and ask follow-up questions.
