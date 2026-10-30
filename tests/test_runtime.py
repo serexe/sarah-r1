@@ -93,20 +93,57 @@ async def main():
  assert (await client.request('_sarah/policy',{}))['policy']==identity()
  session=(await client.request('session/new',{'cwd':sys.argv[1],'mcpServers':[]}))['sessionId']
  wired=wire_server.session_manager.get_session(session)
- def fake_conversation(**kw):
+ wired.agent._cached_system_prompt='offline cached prompt'
+ from datetime import datetime, timezone
+ from unittest.mock import patch
+ from run_agent import AIAgent
+ clock_samples=[datetime(2026,10,30,1,0,tzinfo=timezone.utc),datetime(2026,11,2,1,0,tzinfo=timezone.utc)]
+ expected_clocks=[('2026-10-29T20:00:00-05:00','CDT'),('2026-11-01T19:00:00-06:00','CST')]
+ seen=[]
+ def fake_conversation(agent,user_message,**kw):
+  kw['user_message']=user_message
+  index=len(seen)
+  assert kw['persist_user_message']=='offline prompt'
+  assert kw['user_message'].endswith(chr(10)*2+kw['persist_user_message']), 'fresh clock context missing'
+  local,zone=expected_clocks[index]
+  assert 'America/Chicago: '+local+' '+zone in kw['user_message']
+  assert 'UTC: '+clock_samples[index].isoformat() in kw['user_message']
+  assert len(kw['user_message'])<700
+  assert 'server clock' in agent.ephemeral_system_prompt.lower()
+  assert all('Server clock snapshot' not in str(m.get('content','')) for m in kw['conversation_history'])
+  seen.append(kw['user_message'])
   call=NS(id='offline_call',function=NS(name='ha_get_state',arguments='{"entity_id":"light.test"}'))
-  messages=[{'role':'user','content':kw['user_message']},{'role':'assistant','content':None,'tool_calls':[{'id':'offline_call','type':'function','function':{'name':'ha_get_state','arguments':'{"entity_id":"light.test"}'}}]}]
+  messages=list(kw['conversation_history'])+[{'role':'user','content':kw['user_message']},{'role':'assistant','content':None,'tool_calls':[{'id':'offline_call','type':'function','function':{'name':'ha_get_state','arguments':'{"entity_id":"light.test"}'}}]}]
+  # Same override setup as installed turn_context, before tool persistence.
+  agent._persist_user_message_idx=len(kw['conversation_history'])
+  agent._persist_user_message_override=kw['persist_user_message']
   wired.agent._execute_tool_calls(NS(tool_calls=[call]),messages,session,1)
   messages.append({'role':'assistant','content':'offline response'})
-  wired.agent._flush_messages_to_session_db(messages,kw['conversation_history'])
+  # Exercise installed clean-persistence + returned-history seam, no provider.
+  agent._flush_messages_to_session_db(messages,kw['conversation_history'])
+  agent._apply_persist_user_message_override(messages)
   return {'final_response':'offline response','messages':messages}
- wired.agent.run_conversation=fake_conversation
  receipts=[]
  async def owner(name,args):
   receipts.append((name,args));return {'reply':'server-owned receipt'}
  client.dispatch=owner
- assert await client.prompt(session,'offline prompt')=='offline response'
- assert receipts==[('ha_get_state',{'entity_id':'light.test'})]
+ with patch.object(AIAgent,'run_conversation',fake_conversation):
+  for sample in clock_samples:
+   with patch('bridge.acp_launcher.datetime',create=True) as current:
+    current.now.return_value=sample
+    answer=await client.prompt(session,'offline prompt')
+    assert answer=='offline response', answer
+    current.now.assert_called_once_with(timezone.utc)
+ assert len(seen)==2 and seen[0]!=seen[1]
+ assert receipts==[('ha_get_state',{'entity_id':'light.test'})]*2
+ persisted=db.get_messages_as_conversation(session)
+ assert [m['content'] for m in persisted if m['role']=='user']==['offline prompt']*2, persisted
+ assert all('Server clock snapshot' not in str(m.get('content','')) for m in persisted)
+ assert [(m['role'],m.get('content')) for m in wired.history]==[(m['role'],m.get('content')) for m in persisted]
+ assert wired.agent._cached_system_prompt=='offline cached prompt'
+ reloaded=compose(asyncio.get_running_loop(),db,resolver).session_manager.get_session(session)
+ assert [(m['role'],m.get('content')) for m in reloaded.history]==[(m['role'],m.get('content')) for m in persisted]
+ print('CLOCK PASS: fresh per-turn UTC + Chicago CDT/CST, SDK wire, literal stored/returned history, unchanged cached system')
  await client.close()
  serving.cancel()
  with contextlib.suppress(asyncio.CancelledError): await serving
@@ -304,6 +341,100 @@ asyncio.run(main())
             with patch.object(ACPClient,'connect',side_effect=AssertionError('must not reconnect')):
                 with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):
                     await self.bound()
+
+    async def test_legacy_android_conversation_explicit_migration_no_failed_replay(self):
+        # Synthetic completed dialogue, STT errors and refused clock request;
+        # no ACP binding. No real device identifiers or history are used.
+        profile = Path(self.tmp.name) / 'migration-profile'
+        profile.mkdir()
+        self.config = ACPConfig(cwd=str(profile / 'workspace'))
+        adapter = self.adapter()
+        for i in range(26):
+            turn = self.store.admit('a', self.conversation, 'old-' + str(i), 'old')
+            self.store.finish('a', turn, 'done', 'answer-' + str(i), 'question-' + str(i))
+        for i in range(2):
+            turn = self.store.admit('a', self.conversation, 'stt-' + str(i), 'stt')
+            self.store.finish('a', turn, 'error', 'Voice request failed (ValueError).', '')
+        with patch.object(ACPClient, 'connect', side_effect=AssertionError('predispatch refusal')):
+            with self.assertRaisesRegex(ACPError, 'acp_backend_requires_new_conversation'):
+                await adapter.reply_turn('What time is it?', [], device='a', conversation=self.conversation)
+        adapter.ready = True
+        adapter.transcribe = lambda path: 'What time is it?'
+        audio = io.BytesIO()
+        with wave.open(audio, 'wb') as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+            wav.writeframes(b'\0' * 16000)
+        client = TestClient(TestServer(make_app(self.store, adapter)))
+        await client.start_server()
+        try:
+            with patch.object(ACPClient, 'connect', side_effect=AssertionError('predispatch refusal')):
+                response = await client.post('/v1/turns', data=audio.getvalue(), headers={
+                    'Authorization': 'Bearer ' + 'a' * 48, 'Content-Type': 'audio/wav',
+                    'X-Conversation': self.conversation, 'Idempotency-Key': 'failed-time'})
+                self.assertEqual(response.status, 202)
+                failed = (await response.json())['turn']
+                for _ in range(30):
+                    if self.store.get('a', failed)['state'] == 'error': break
+                    await asyncio.sleep(0.01)
+                failure = self.store.get('a', failed)
+                self.assertEqual(failure['state'], 'error')
+                self.assertIn('acp_backend_requires_new_conversation', failure['detail'])
+                self.assertIn('nothing dispatched', failure['detail'])
+                self.assertNotIn('outcome may be unknown', failure['detail'])
+        finally:
+            await client.close()
+        original = [tuple(r) for r in self.store.db.execute('SELECT * FROM turns ORDER BY rowid')]
+        plan = adapter.legacy_migration_plan(device='a', conversation=self.conversation)
+        self.assertEqual(plan['completed_turns'], 26)
+        with patch.dict('os.environ', {'HERMES_HOME': str(profile)}), patch.object(sys, 'path', ['/opt/hermes-agent'] + sys.path):
+            try:
+                from hermes_state import SessionDB
+                from acp_adapter.session import SessionManager
+            except ImportError:
+                self.skipTest('optional installed Hermes SessionDB fixture unavailable')
+            db = SessionDB(db_path=profile / 'state.db')
+            try:
+                with self.assertRaisesRegex(ACPError, 'acp_migration_snapshot_changed'):
+                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest='stale', session_db=db)
+                self.assertEqual(self.store.db.execute('SELECT count(*) FROM acp_sessions').fetchone()[0], 0)
+                with patch.object(ACPClient, 'connect', side_effect=AssertionError('migration cannot prompt')):
+                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest=plan['digest'], session_db=db)
+                binding = self.store.db.execute('SELECT * FROM acp_sessions').fetchone()
+                self.assertEqual(binding['state'], 'ready')
+                restored = SessionManager(agent_factory=lambda: SimpleNamespace(model='offline'), db=db).get_session(binding['session'])
+                expected = [m for i in range(26) for m in (
+                    {'role': 'user', 'content': 'question-' + str(i)},
+                    {'role': 'assistant', 'content': 'answer-' + str(i)})]
+                self.assertIsNotNone(restored)
+                assert restored is not None
+                self.assertEqual([{'role':m['role'],'content':m['content']} for m in restored.history], expected)
+                with self.assertRaisesRegex(ACPError, 'acp_migration_binding_exists'):
+                    adapter.migrate_legacy(device='a', conversation=self.conversation, expected_digest=plan['digest'], session_db=db)
+                with patch.object(ACPClient, 'connect', self.connect):
+                    # Explicit NEW request, not failed time-question replay.
+                    self.assertEqual(await adapter.reply_turn('New compatible turn', [], device='a', conversation=self.conversation), 'hello')
+                    self.assertEqual(await adapter.reply_turn('New followup', [], device='a', conversation=self.conversation), 'hello')
+                self.assertFalse(any(c.get('method') == 'session/new' for c in self.calls))
+                self.assertEqual([c['params']['sessionId'] for c in self.calls if c.get('method') == 'session/load'], [binding['session']] * 2)
+                prompts = [c['params']['prompt'][0]['text'] for c in self.calls if c.get('method') == 'session/prompt']
+                self.assertEqual(prompts, ['New compatible turn', 'New followup'])
+                self.assertEqual(original, [tuple(r) for r in self.store.db.execute('SELECT * FROM turns ORDER BY rowid')])
+                self.assertEqual(self.store.db.execute('SELECT count(*) FROM dispatches').fetchone()[0], 0)
+                with self.assertRaisesRegex(ValueError, 'not_found'):
+                    adapter.legacy_migration_plan(device='b', conversation=self.conversation)
+                partial = self.store.conversation('a')
+                turn = self.store.admit('a', partial, 'partial-import', 'partial')
+                self.store.finish('a', turn, 'done', 'old answer', 'old question')
+                partial_plan = adapter.legacy_migration_plan(device='a', conversation=partial)
+                with patch.object(db, 'replace_messages', side_effect=OSError('offline injected write failure')):
+                    with self.assertRaises(OSError):
+                        adapter.migrate_legacy(device='a', conversation=partial, expected_digest=partial_plan['digest'], session_db=db)
+                self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions WHERE conversation=?', (partial,)).fetchone()[0], 'migrating')
+                with patch.object(ACPClient, 'connect', side_effect=AssertionError('partial import cannot prompt')):
+                    with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
+                        await adapter.reply_turn('must not send', [], device='a', conversation=partial)
+            finally:
+                db.close()
 
     async def test_old_history_and_inflight_refused_without_connect(self):
         with patch.object(ACPClient, 'connect', side_effect=AssertionError('must not connect')):

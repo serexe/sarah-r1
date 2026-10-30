@@ -141,8 +141,16 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                 # Text remains usable when optional free TTS unavailable.
             if active(device,turn):store.finish(device,turn,'done',text,transcript)
         except Exception as e:
-            # Never include raw upstream exceptions/tokens in device output.
-            if active(device,turn):store.finish(device,turn,'error','Voice request failed ('+type(e).__name__+'). Any dispatched action outcome may be unknown; no automatic retry.',transcript)
+            # Only this exact local pre-connect refusal proves no dispatch.
+            # Never expose arbitrary upstream errors or label unknown turns safe.
+            from .acp_client import ACPError
+            if isinstance(e, ACPError) and str(e) == 'acp_backend_requires_new_conversation':
+                detail=('ACP conversation migration required (acp_backend_requires_new_conversation). '
+                        'Existing conversation history preserved. Request not sent to agent; nothing dispatched. '
+                        'No automatic retry. Explicit server migration required before a new request.')
+            else:
+                detail='Voice request failed ('+type(e).__name__+'). Any dispatched action outcome may be unknown; no automatic retry.'
+            if active(device,turn):store.finish(device,turn,'error',detail,transcript)
 
     async def submit(request):
         if not adapter.ready:return web.json_response({'error':adapter.reason},status=503)

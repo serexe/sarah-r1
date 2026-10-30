@@ -36,6 +36,82 @@ class ACPRuntime(VoiceRuntime):
             backend TEXT NOT NULL, session TEXT NOT NULL, state TEXT NOT NULL,
             PRIMARY KEY(device,conversation), UNIQUE(backend,session))''')
 
+    def legacy_migration_plan(self, *, device, conversation):
+        """Operator-only dry-run fingerprint. Never called by request admission."""
+        self.store.own(device, conversation)
+        if self.store.db.execute(
+                'SELECT 1 FROM acp_sessions WHERE device=? AND conversation=?',
+                (device, conversation)).fetchone():
+            raise ACPError('acp_migration_binding_exists')
+        rows = self.store.db.execute(
+            'SELECT id,state,transcript,detail FROM turns WHERE device=? AND conversation=? ORDER BY rowid',
+            (device, conversation)).fetchall()
+        history = []
+        for row in rows:
+            # Failed requests are never imported as executable pending prompts.
+            # Unknown/cancelled/active outcomes need separate reconciliation.
+            if row['state'] not in ('done', 'error'):
+                raise ACPError('acp_migration_reconciliation_required')
+            if row['state'] == 'error':
+                if self.store.db.execute('SELECT 1 FROM dispatches WHERE turn=?', (row['id'],)).fetchone():
+                    raise ACPError('acp_migration_reconciliation_required')
+                continue
+            if not row['transcript'].strip() or not row['detail'].strip():
+                raise ACPError('acp_migration_history_incomplete')
+            history.extend([{'role': 'user', 'content': row['transcript']},
+                            {'role': 'assistant', 'content': row['detail']}])
+        if not history or len(history) > 2000 or sum(len(m['content']) for m in history) > 128000:
+            raise ACPError('acp_migration_history_bounds')
+        import hashlib
+        import json
+        snapshot = [device, conversation, self.config.identity, [dict(r) for r in rows]]
+        digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
+        return {'digest': digest, 'completed_turns': len(history) // 2}
+
+    def migrate_legacy(self, *, device, conversation, expected_digest, session_db):
+        """Explicit operator migration using supported Hermes SessionDB APIs.
+
+        No HTTP/model path invokes this. Requires accepted dry-run fingerprint,
+        preserves existing conversation, imports only literal completed dialogue,
+        and never submits/retries a prompt. Any partial write stays fail-closed.
+        Caller must supply the reviewed dedicated profile DB, never shared DB.
+        """
+        import uuid
+        if Path(session_db.db_path).resolve() != (Path(self.config.cwd).parent / 'state.db').resolve():
+            raise ACPError('acp_migration_dedicated_db_required')
+        self.store.db.execute('BEGIN IMMEDIATE')
+        try:
+            plan = self.legacy_migration_plan(device=device, conversation=conversation)
+            if expected_digest != plan['digest']:
+                raise ACPError('acp_migration_snapshot_changed')
+            rows = self.store.db.execute(
+                "SELECT transcript,detail FROM turns WHERE device=? AND conversation=? AND state='done' ORDER BY rowid",
+                (device, conversation)).fetchall()
+            history = [message for row in rows for message in (
+                {'role': 'user', 'content': row['transcript']},
+                {'role': 'assistant', 'content': row['detail']})]
+            session_id = str(uuid.uuid4())
+            self.store.db.execute('INSERT INTO acp_sessions VALUES(?,?,?,?,?)',
+                (device, conversation, self.config.identity, session_id, 'migrating'))
+            self.store.db.execute('COMMIT')
+        except BaseException:
+            self.store.db.execute('ROLLBACK')
+            raise
+        # Reserve durable ownership before writing other DB. A crash/failure
+        # cannot turn a partial import into a fresh session or a prompt replay.
+        if session_db.get_session(session_id) is not None:
+            raise ACPError('acp_migration_session_exists')
+        session_db.create_session(session_id=session_id, source='acp', model='gpt-6.1-sol',
+                                  model_config={'cwd': self.config.cwd})
+        session_db.replace_messages(session_id, history)
+        restored = session_db.get_messages_as_conversation(session_id)
+        if [{'role': m['role'], 'content': m.get('content')} for m in restored] != history:
+            raise ACPError('acp_migration_history_mismatch')
+        self.store.db.execute(
+            "UPDATE acp_sessions SET state='ready' WHERE device=? AND conversation=? AND session=? AND state='migrating'",
+            (device, conversation, session_id))
+        return plan
+
     async def reply(self, *args, **kwargs):
         # Never inherit VoiceRuntime's direct Codex route, even if mis-called.
         raise ACPError(self.reason)

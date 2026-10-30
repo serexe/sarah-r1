@@ -8,6 +8,8 @@ import asyncio
 import contextlib
 import json
 import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
 
@@ -51,6 +53,30 @@ def compose(loop, db, runtime_resolver=None):
     from .acp_policy import NAMES, SCHEMAS, TOOLSET, GUIDANCE, identity, validate, normalized
 
     class ScopedAgent(AIAgent):
+        def run_conversation(self, user_message, system_message=None,
+                             conversation_history=None, task_id=None,
+                             stream_callback=None, persist_user_message=None,
+                             persist_user_timestamp=None, moa_config=None):
+            # API-only context: keep wire text, durable dialogue and cached
+            # system prompt literal. Sample on EVERY turn, never on restore.
+            if not isinstance(user_message, str):
+                raise ValueError('acp_text_prompt_required')
+            now = datetime.now(timezone.utc)
+            local = now.astimezone(ZoneInfo('America/Chicago'))
+            context = (
+                'Server clock snapshot for this turn: UTC: '
+                + now.isoformat(timespec='seconds') + '; America/Chicago: '
+                + local.isoformat(timespec='seconds') + ' ' + (local.tzname() or 'America/Chicago') + '. '
+                'Use this sampled clock for current time and today/tomorrow; '
+                'historical timestamps are not current. This is a turn-start '
+                'snapshot, not a continuously running clock.\n\n')
+            return super().run_conversation(
+                context + user_message, system_message=system_message,
+                conversation_history=conversation_history, task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=user_message if persist_user_message is None else persist_user_message,
+                persist_user_timestamp=persist_user_timestamp, moa_config=moa_config)
+
         def _execute_tool_calls(self, assistant_message, *args, **kwargs):
             calls = assistant_message.tool_calls or []
             for call in calls:
@@ -93,7 +119,11 @@ def compose(loop, db, runtime_resolver=None):
                             api_mode=runtime.get('api_mode'), enabled_toolsets=[TOOLSET],
                             disabled_toolsets=[], quiet_mode=True, max_iterations=10,
                             skip_context_files=True, load_soul_identity=False, skip_memory=True,
-                            ephemeral_system_prompt=GUIDANCE, session_db=db, session_id=session_id,
+                            ephemeral_system_prompt=GUIDANCE + (
+                                ' Use the server clock snapshot supplied with the current turn '
+                                'for current time; no clock tool is required. Never treat '
+                                'conversation-start or historical timestamps as current.'),
+                            session_db=db, session_id=session_id,
                             fallback_model=None, checkpoints_enabled=False, platform='acp')
         if (normalized(sorted(agent.tools, key=lambda t: t['function']['name'])) != normalized(sorted(SCHEMAS, key=lambda t: t['function']['name']))
                 or agent.valid_tool_names != NAMES):

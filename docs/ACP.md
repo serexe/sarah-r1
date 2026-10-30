@@ -22,6 +22,14 @@ Binding is durable per device/conversation plus backend/policy/source identity. 
 
 Context files, soul identity, memory, user profile loading and skill creation nudges are disabled. This is not the main Hermes profile's memory/skills/context experience. It reuses Hermes' conversation/session engine with a narrowly composed capability set. The inert sentinel exists because installed Hermes can seed SOUL.md even when context loading is disabled.
 
+## Explicit legacy migration and current-clock context
+
+Legacy completed bridge dialogue without an ACP binding is refused before agent connection with `acp_backend_requires_new_conversation`. The device receives a specific migration-required message; uncertain upstream failures retain the generic unknown-outcome warning. No request automatically migrates, retries or creates a replacement conversation.
+
+An operator may review `ACPRuntime.legacy_migration_plan(device=..., conversation=...)` and explicitly call `migrate_legacy` with that exact accepted digest and the dedicated profile's `SessionDB`. This imports literal completed user/assistant dialogue only, never failed requests or pending prompts. Changed snapshots, existing bindings, ambiguous outcomes and partial imports fail closed. Back up and review the exact deployment first; this is not a generic rebind path for changed backend identities.
+
+Each new model turn receives one UTC clock sample and its America/Chicago conversion, including the applicable daylight/standard offset. This API-facing context does not alter literal persisted user messages or the cached system prompt. It is a trusted host turn-start snapshot, not independent clock synchronization or a continuously updated playback-time clock. Compatible Hermes persistence APIs must support the literal-message override. Installed session restoration may reallocate internal message row IDs while preserving message content and tool fields; storage-ID stability is not promised.
+
 ## Verification limits
 
 Focused synthetic tests cover durable followups/device isolation, denied permissions/client execution, exact dispatch binding/schema policy, transport loss/Stop without replay, inactive admission, and exact bootstrap bytes. An optional installed-composition fixture runs only when `/opt/hermes-agent` exists; it is not needed for ordinary offline tests. Source hashes prevent silently reusing sessions after changes.
