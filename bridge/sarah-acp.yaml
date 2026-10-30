@@ -1,0 +1,24 @@
+# Generic dedicated ACP template; no credentials or deployment identity.
+model:
+  provider: openai-codex
+  default: gpt-6.1-sol
+agent:
+  max_turns: 10
+  tool_use_enforcement: false
+fallback_providers: []
+mcp_servers: {}
+plugins:
+  enabled: []
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  provider: none
+compression:
+  enabled: false
+checkpoints:
+  enabled: false
+skills:
+  creation_nudge: false
+auxiliary:
+  title_generation:
+    enabled: false

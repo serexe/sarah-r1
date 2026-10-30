@@ -1,4 +1,16 @@
-# Verification record — private review candidate
+# Verification record
+
+Earlier sections below are historical private-review records, not current publication authorization.
+
+## Scoped ACP source publication — 2026-10-30
+
+Explicitly authorized narrow source port from accepted private ACP implementation, preserving the curated public baseline. Added four scoped adapter modules, credential-free generic bootstrap template and deployment guidance; selected backend defaults to the existing Codex route. Existing public integration opt-ins, one-mutation slot, receipt ownership and native client remain unchanged.
+
+Focused offline verification, credential-isolated HOME/minimal environment and explicit publication inventory: **106 passed, 1 skipped, 10 subtests passed, 1 warning in 9.16s**. Command selected only `test_runtime.py`, `test_action_results.py`, `test_http.py`, `test_security.py`, `test_reconnect.py`, `test_public_defaults.py` and `test_publication_gate.py`; no full-suite rerun. The skipped installed-composition fixture requires optional `/opt/hermes-agent`. Warning remains existing aiohttp `NotAppKeyWarning`.
+
+Inventory contains **91 files**. Final-manifest privacy scan and private deployment/account/path/LAN literal controls returned **0 findings**; heuristic only. **29 paths** covering native app/power/probes, public integration/core/runtime behavior and publication guards match baseline byte-for-byte. No private runtime profile, deployment unit, credentials, logs, DB, media or evidence files are included. Existing reviewed screenshot is unchanged. Public source port is not byte-identical to private activated source: generic paths/interpreter/persona, synthetic fixture isolation and explicit nonsecret timezone propagation are intentional publication adaptations.
+
+No repeated independent safety review, provider prompt, live integration test, full suite, golden30/native probe, APK/VM/device build, service/config activation or other project work performed for this publication. Earlier accepted private live proofs do not prove this generic public deployment. Release/device/compatibility limitations below remain open.
 
 No public release or public hosting is authorized by this record. The owner confirmed original authorship and selected MIT for the original project code; see ../LICENSE and ../LICENSE-STATUS.md. Third-party rights and binary distribution obligations remain separate and unaudited.
 

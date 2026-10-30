@@ -1,5 +1,7 @@
 # Explicit configuration
 
+Optional `--backend acp` uses a dedicated, fail-closed Hermes composition; default remains `--backend codex`. Read [ACP deployment and limitations](ACP.md) before selecting it. Its fixed generic source/profile paths and pinned model differ from the legacy adapter; no actual configured profile is distributed.
+
 `config/bridge.env.example` lists generic values; it is not loaded automatically. Export approved values or use a private service-manager environment file. Never source untrusted env files. Integration flags require literal `1`; credentials alone do not enable a backend. No credentials are shipped.
 
 - `R1_CODEX_MODEL`: conversation model identifier; default retained from source. Account/provider must support it; no availability claim is made.

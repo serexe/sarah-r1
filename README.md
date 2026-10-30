@@ -40,7 +40,7 @@ These are implemented source capabilities. Integrations need your own configurat
 | Optional TV hook | One administrator-selected Python script, with no model-supplied command arguments | Your own audited implementation; no TV-control workflow is bundled |
 | Optional idle-power helper | Bounded suspend holds from validated native input/operation events | Separate privileged Ubuntu Touch helper setup and device-specific review |
 
-All integration flags are off by default. See [configuration](docs/CONFIGURATION.md) for exact variables, limits, and permissions.
+All integration flags are off by default. See [configuration](docs/CONFIGURATION.md) for exact variables, limits, and permissions. An explicit, optional [scoped Hermes ACP backend](docs/ACP.md) preserves the existing tool grants, per-device conversation bindings and server-owned action receipts without inheriting broad Hermes tools or memory. The legacy Codex backend remains default.
 
 **Important:** enabling Home Assistant authorizes discovered services available to its token, including potentially sensitive ones, without repeated confirmation. The retained confirmation screen is **not** a mandatory approval policy. Do not enable it unless that trust model suits your setup.
 

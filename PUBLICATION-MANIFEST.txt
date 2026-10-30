@@ -19,6 +19,10 @@ app/voice.apparmor
 app/voice.desktop
 assets/sarah-r1-native-redacted.png
 bridge/__init__.py
+bridge/acp_client.py
+bridge/acp_launcher.py
+bridge/acp_policy.py
+bridge/acp_runtime.py
 bridge/calendar.py
 bridge/clock.py
 bridge/core.py
@@ -28,11 +32,13 @@ bridge/prepare.py
 bridge/provision_device.py
 bridge/rollback.py
 bridge/runtime.py
+bridge/sarah-acp.yaml
 bridge/server.py
 bridge/siyuan.py
 bridge/tvtime.py
 clickable.yaml
 config/bridge.env.example
+docs/ACP.md
 docs/ARCHITECTURE.md
 docs/CONFIGURATION.md
 docs/SETUP.md

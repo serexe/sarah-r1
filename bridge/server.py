@@ -41,7 +41,8 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         if siyuan is not None: reason+=' SiYuan discovery/search/read/create/stable-ID update/append/edit and exact childless document deletion; writes verified by readback, deletion locally backed up. Private and root zArchive excluded.'
         if calendar is not None: reason+=' Calendar enabled for explicitly configured scope; list/read/create/update/exact delete with readback. Configuration is not live scope verification.'
         if tvtime is not None: reason+=' TV time ON uses existing canonical workflow once; webhook accepted is not device readiness proof.'
-        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'tools':any(b is not None for b in (ha,siyuan,calendar,tvtime)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None})
+        if getattr(adapter,'backend',None)=='acp': reason=adapter.reason+' Existing HA/SiYuan/calendar/TV grants preserved; server-owned mutation receipts, not model completion, establish action outcomes.'
+        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'tools':bool(adapter.ready) and any(b is not None for b in (ha,siyuan,calendar,tvtime)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None})
     async def conversation(request):
         await body(request,[])
         return web.json_response({'conversation':store.conversation(request['device'])},status=201)
@@ -116,7 +117,11 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                 return outcome
             # Every utterance reaches the model with the same supported tools.
             # Semantic intent belongs to Codex, not a local phrase classifier.
-            text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
+            if hasattr(adapter, 'reply_turn'):
+                text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation,
+                                              dispatch=dispatch if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else None)
+            else:
+                text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
             if not active(device,turn):return
             # Actual dispatch outcomes remain server-owned. With no tool outcome,
             # preserve conversation/clarification exactly; never invent an action
@@ -207,9 +212,11 @@ def main():
     p.add_argument('--db',type=Path,required=True);p.add_argument('--cert',required=True);p.add_argument('--key',required=True)
     p.add_argument('--hermes-source',type=Path,required=True)
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
+    p.add_argument('--backend',choices=('codex','acp'),default='codex',
+                   help='Manual backend selection; ACP requires reviewed dedicated Sarah profile')
     args=p.parse_args();store=Store(args.db);store.recover()
-    from .runtime import VoiceRuntime
-    adapter=VoiceRuntime(args.hermes_source)
+    from .acp_runtime import create_runtime
+    adapter=create_runtime(store,args.hermes_source,args.backend)
     tls=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);tls.minimum_version=ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(args.cert,args.key)
     from .ha import HADispatcher
