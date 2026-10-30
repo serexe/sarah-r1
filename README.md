@@ -4,13 +4,13 @@ A voice companion for conversations and everyday tasks. Tap the microphone, ask 
 
 Sarah connects your device to a **self-hosted HTTPS voice bridge**. The shared bridge handles transcription, AI conversation, speech generation, and any tools you choose to enable. You need your own configured backend; this is not a standalone or fully offline AI assistant.
 
-[Download Android](https://github.com/serexe/sarah-android/releases/latest) · [Get started](#get-started) · [Android source](android/README.md) · [Ubuntu Touch setup](docs/SETUP.md#native-client) · [Security](SECURITY.md)
+[Download Android v31 review](https://github.com/serexe/sarah-r1/releases/tag/android-v31-historical-apk-review) · [Stable golden30](https://github.com/serexe/sarah-android/releases/tag/sarah-golden-v30) · [Get started](#get-started) · [Android source](android/README.md) · [Ubuntu Touch setup](docs/SETUP.md#native-client) · [Security](SECURITY.md)
 
 ## Project home and releases
 
 **[serexe/sarah-r1](https://github.com/serexe/sarah-r1) is the maintained home for Sarah source, documentation, issues, and future releases across Android and Ubuntu Touch / R1.** Start new development here: Android source lives in `android/`; the shared bridge and native client live alongside it.
 
-The original [sarah-android repository](https://github.com/serexe/sarah-android) is retained as a read-only historical archive. Its [existing Android releases](https://github.com/serexe/sarah-android/releases), branches, tags, screenshots, and provenance records stay there; they have not been copied or reissued here. The download links below intentionally point to those historical APKs. Future releases belong to [this repository's releases](https://github.com/serexe/sarah-r1/releases); consolidation itself does not publish a new build or validate the imported Android snapshot.
+The original [sarah-android repository](https://github.com/serexe/sarah-android) is retained as a read-only historical archive. Its [existing Android releases](https://github.com/serexe/sarah-android/releases), branches, tags, screenshots, and provenance records stay there unchanged. The existing **v31 Command Center review APK** is now available as a [historical APK-only prerelease here](https://github.com/serexe/sarah-r1/releases/tag/android-v31-historical-apk-review), with unchanged bytes and explicit source-provenance limits. This publication is not a rebuild or golden promotion. Future releases belong to [this repository's releases](https://github.com/serexe/sarah-r1/releases); consolidation itself does not validate the imported Android snapshot.
 
 ## What you can do
 
@@ -29,9 +29,9 @@ For example, ask “Turn on the kitchen lights,” “Add milk to my notes,” o
 | Android 8.0+ | Tap-to-talk, spoken replies, optional on-device “Hey Sarah” | [Stable golden30 APK](https://github.com/serexe/sarah-android/releases/tag/sarah-golden-v30): local-review/debug-signed, not a production-signed consumer release. [Exact APK identity and proof limits](https://github.com/serexe/sarah-android/blob/main/SARAH_BASELINE.md). |
 | Ubuntu Touch / R1 | Native Qt 5/QML client, tap-to-talk, transcript and reply playback | Experimental sanitized source candidate. Build/package it yourself; no public device binary or device-verified release is supplied. [Setup](docs/SETUP.md#native-client) · [Verification](docs/VERIFICATION.md). |
 
-The Android **v31 Command Center UI** remains a [separate review branch](https://github.com/serexe/sarah-android/tree/ui/command-center-review), not the stable golden30 release and not the Android snapshot in this repository.
+The Android **v31 Command Center UI** has a [downloadable review APK](https://github.com/serexe/sarah-r1/releases/tag/android-v31-historical-apk-review) and a historical [separate review branch](https://github.com/serexe/sarah-android/tree/ui/command-center-review). It is not stable golden30. Exact APK-to-source-commit mapping is not established: the prerelease tag anchors this repository's snapshot only, and GitHub's generated source archives are **not proven build source for the APK**. The APK remains local-review/debug-signed and debuggable, not a production-signed consumer release.
 
-**Repository scope:** `android/` contains a 94-file sanitized source snapshot, not a full migration of the Android repository, its history, branches, tags, release assets, screenshots, or technical publication records. No tested APK/source linkage or build validation is asserted for that snapshot; see [snapshot scope](android/SOURCE-SNAPSHOT.md). Existing Android downloads and supporting records remain in [sarah-android](https://github.com/serexe/sarah-android).
+**Repository scope:** `android/` contains a 94-file sanitized source snapshot, not a full migration of the Android repository, its history, branches, tags, release assets, screenshots, or technical publication records. No tested APK/source linkage or build validation is asserted for that snapshot; see [snapshot scope](android/SOURCE-SNAPSHOT.md). Earlier stable Android downloads and supporting records remain in [sarah-android](https://github.com/serexe/sarah-android); the v31 historical APK-only prerelease is hosted here separately.
 
 ## Screenshots
 
