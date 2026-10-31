@@ -1,6 +1,6 @@
 # S.A.R.A.H Android
 
-Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory now carries the cumulative **[Android golden v36](../SARAH_BASELINE.md)** source, evolved from the original sanitized snapshot. The exact approved APK is a signed local-review/debug build, not production-signed; source-tree identity and pending device checks are recorded in the baseline. The repository's existing `app/` remains the separate Ubuntu Touch client.
+Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This directory carries cumulative **[Android golden v44](../SARAH_BASELINE.md)** source, evolved from the original sanitized snapshot. Public ARM64 APK is a signed local-review/debug build, not production-signed; source-tree identity, omitted private recovery approval and pending rebuilt-byte phone checks are recorded in the baseline. The repository's existing `app/` remains the separate Ubuntu Touch client.
 
 ## Included source
 
@@ -8,7 +8,7 @@ Kotlin/Compose Android voice client for an HTTPS S.A.R.A.H bridge. This director
 - Android assistant-role entry points and an explicitly enabled foreground-microphone service for local “Hey Sarah” detection.
 - Production source, JVM unit-test source, one standalone screenshot-policy instrumentation test, launcher artwork, Gradle wrapper, pinned sherpa-onnx AAR, model files and upstream notices.
 
-The current source/APK version is `0.1.36-clean-layout-review` (version code `36`), package `com.serexe.sarah`. APK identity is verified; installed-device behavior is not established by promotion. Physical-phone black-screen behavior, battery use and wake reliability are not established by publication.
+The current source/APK version is `0.1.44-golden` (version code `44`), package `com.serexe.sarah`, ARM64 only. APK identity is verified; installed-device behavior of rebuilt v44 is not established by promotion. Physical-phone black-screen behavior, battery use and wake reliability are not established by publication.
 
 ## Privacy and setup
 
@@ -28,9 +28,11 @@ From this directory, the ordinary source checks are:
 ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
 ```
 
-No new checks/build/install/restart were run during golden promotion. The existing v36 build log records successful debug assembly plus six focused `ReplyEnvelopeTest` checks; this does not establish full-suite, lint or physical-device proof. See the baseline for exact scope.
+Golden v44 debug assembly succeeded with 15 focused JVM tests; 18 synthetic public-bridge tests also passed. These are not full-suite, lint or physical-device proof. No install or live restart occurred. See the baseline for exact scope.
 
-The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent. Debug APK assembly/install therefore requires your own separately authorized private signing setup. Existing keys were not copied, read or regenerated. Do not commit signing materials. Release signing is not configured here.
+The original `localReview` debug-signing configuration is unchanged. Its `.local-review/review.jks` and `.local-review/signing-pass` inputs are deliberately absent from source control. Debug APK assembly/install requires your own separately authorized private signing setup. Published v44 uses the existing compatible signer; no new key was generated. Do not commit signing materials. Release signing is not configured here.
+
+Exact-approved local recovery uses optional `.local-review/exact-local-recovery.properties` build inputs. Missing input disables it/fails closed. Public v44 deliberately omits the private one-off target hashes. Do not broaden the target, clear state or replay an uncertain request to bypass this boundary.
 
 Environment-specific installed-APK instrumentation harnesses, their certificate/key containers and raw audio fixtures were excluded rather than published. The retained screenshot-policy instrumentation test is not the complete private instrumentation suite. Do not infer full device-test reproducibility or prior pass results from this snapshot.
 

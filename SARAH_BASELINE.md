@@ -1,28 +1,42 @@
-# Android golden v36
+# Android golden v44
 
-User-approved promotion of the exact v36 clean-layout APK. No rebuild, re-signing, internal version change, installation or runtime test occurred during promotion.
+User-authorized cumulative accepted source and public ARM64 phone APK. Golden means approved development baseline, not comprehensive device/runtime certification.
 
-- APK: [sarah-v36-golden-arm64-x86_64.apk](https://github.com/serexe/sarah-r1/releases/download/android-golden-v36/sarah-v36-golden-arm64-x86_64.apk)
+- APK: [sarah-v44-golden-arm64.apk](https://github.com/serexe/sarah-r1/releases/download/android-golden-v44/sarah-v44-golden-arm64.apk)
 - Package: `com.serexe.sarah`
-- Version code: **36**; version name: `0.1.36-clean-layout-review`
-- ABI: **arm64-v8a + x86_64**
-- Size: **83035970 bytes**
-- SHA-256: `477b9a832d6270fcbcb6cc18d3ab8a335897d356e0573627ae3c09a2dcbdcadb`
+- Version code: **44**; version name: `0.1.44-golden`
+- ABI: **arm64-v8a only**; five native libraries verified as AArch64.
+- Size: **47332923 bytes**
+- SHA-256: `a4e26bad8ce1351d1d8faafb75b12437e4c8554f9a1eead175d2f1dd8e7e3c4f`
 - Signer SHA-256: `79c9b26baac4b0b60563430ebdf0023808cdf4e04b4d1d719fa950a7f3d5fa7d`
-- Build: **signed local-review/debug build; debuggable; not a production-signed consumer release**.
-- Annotated golden tag: `android-golden-v36`; public source commit: `08e08c7c09c6a3c9f2c6eeda6c12d414364467a6`.
-- Exact approved local build-source commit: `9ea8bfd5a4163139288138b02445bddb8463a3db`. Private machine author/committer metadata was replaced with the public noreply identity before publication; all five cumulative commit trees/messages preserved. Original local review refs remain untouched. Final source Git tree is byte-identical: `d2ffac08a66611bcdfccbe0e22c4b793c476d176`. No production source changed during privacy sanitization.
+- Build: **signed local-review/debug build; debuggable; not a production-signed consumer release**. Same signer/package as preceding review APKs; metadata/signature upgrade-compatible. Physical upgrade of these rebuilt bytes remains pending.
+- Annotated golden tag: `android-golden-v44`.
+- Exact public build-source commit: `c860714267527376c592756462764142bc2e5dbf`.
+- Exact source tree: `a76210fc23ba71799d6e6268e49a172dedfdc189`.
+- Release: https://github.com/serexe/sarah-r1/releases/tag/android-golden-v44
 
-## Scope and proof limits
+## Included accepted work
 
-Cumulative v32–v36 Companion UI, real playback-envelope waveform and clean bounded main/settings layout. Main transcript appears once in collapsed History; speaking displacement remains adaptive to finite canvas space.
+Cumulative earlier Companion UI, waveform and response-speed work; retained warm local voice worker and opt-in first-sentence MP3 sequence with bounded acknowledgement/backpressure; bounded warm ACP conversation worker reuse with per-turn ownership and fail-closed uncertainty; uncertain-request reconciliation, retained submission diagnostics, explicit sanitized Send/Share diagnostics, and exact-approved local-recovery source.
 
-Existing v36 build log records `BUILD SUCCESSFUL in 11s`; six focused ReplyEnvelope tests passed with zero failures/errors. Those are earlier build/unit checks, not a new full suite or physical-device proof. Publication privacy checks cover all newly published cumulative blobs/metadata, tracked text, the portrait image and APK ZIP manifest/Dex/resource strings. No concrete operator identifier/credential found after metadata sanitization; heuristic scanning is not exhaustive security or steganographic certification.
+This public bridge is the maintained sanitized variant, not a wholesale copy of a private deployment. Diagnostics routes retain the existing authentication guard. Publication does not deploy/restart a bridge, repair a binding, replay a request, alter pairing/history/ACK state, or install an APK.
 
-**Still pending:** real-device screen fit, increased-font behavior, History interaction, waveform/codec feel, Stop followed by the next question, physical screen-off successive wakes and battery behavior. Golden means approved baseline, not runtime-proven phone behavior. No device installation, service restart or deployment was performed.
+## Public build differs from private v43 candidate
 
-Historical v31 APK-only source-provenance limitations remain unchanged. Old `serexe/sarah-android` archive, tags and releases remain untouched. Existing licensing/dependency caveats and upstream notices still apply.
+Earlier v43 behavior was manually accepted. That candidate embedded private one-off request/conversation approval hashes. Its APK is **not** published publicly. Public v44 retains the same Android source except version metadata; private recovery approval inputs are deliberately omitted. Thus exact-target recovery is disabled/fail-closed in this public build, not generalized to other requests. No private identifiers, target hashes, pairing, credentials or state are supplied. Do not reset/re-pair or resend an uncertain request to bypass a recovery guard.
+
+The v44 APK was rebuilt once for public-safe inputs and a unique version code. Prior phone acceptance is not relabeled as testing these new bytes. Native libraries and assets (17 entries) and permissions are byte-identical/equal to v43. Signing and alignment verified.
+
+## Actual checks and limits
+
+- Final `assembleDebug` and focused JVM checks: **BUILD SUCCESSFUL**; **15 tests passed**, zero failures/errors/skips (exact recovery, sanitized diagnostics and existing resolved-cancellation handoff).
+- Final public bridge composition: **18 synthetic tests passed**, covering warm ACP reuse/ownership/cancellation, sentence MP3 ordering/backpressure/acknowledgement, warm voice cleanup and authenticated diagnostics. No production model/tool traffic.
+- `git diff --check`; APK package/version/ABI/ELF/signature/alignment/permissions/hash verification; private approval/signing-input byte scan; newly reachable source blobs and commit metadata privacy review. Heuristic privacy checks are not security certification.
+- Existing stage benchmarks and user warm-response acceptance do not measure phone first-audible latency. No first-audible or comprehensive physical Stop/screen-off/wake/battery guarantee.
+- **Pending:** physical update-install and runtime validation of this exact v44 APK; device layout/font/History, sentence playback/codec feel, Stop followed by the next question, successive offscreen wakes and battery behavior. No VM/emulator/device install or lifecycle operation occurred during release work.
+
+Historical tags/releases remain unchanged. Original snapshot, licensing/dependency and upstream-notice limitations still apply.
 
 ## Future work baseline
 
-Branch from current `main`; preserve this annotated tag and exact APK. Android versionCode floor is 36: future APKs must use a greater code. Main may add documentation commits after the tag; the APK is tied to the exact source tree above, not subsequent documentation. Release: https://github.com/serexe/sarah-r1/releases/tag/android-golden-v36
+Branch from current `main`; preserve the annotated golden tag and exact APK. **Android versionCode floor is 44**: future APKs must use a greater code. Main may add baseline/download documentation after the tag; this APK is tied to the exact source commit/tree above, not later docs. Do not copy private deployment/configuration/state into this repository or its release assets.
