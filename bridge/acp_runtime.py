@@ -4,6 +4,7 @@ Durable binding adapted from friend's acp_runtime.py. Deployed STT/TTS retained.
 """
 import asyncio
 import threading
+import secrets
 from pathlib import Path
 
 from .acp_client import ACPClient, ACPConfig, ACPError, settle
@@ -19,6 +20,11 @@ class ACPRuntime(VoiceRuntime):
         # Speech initialization only. No provider resolution/model load here.
         self.whisper = None
         self.lock = threading.Lock()
+        self._worker = None
+        self._worker_key = None
+        self._idle = None
+        self._worker_lock = asyncio.Lock()
+        self._closed = False
         self.store = store
         self.source = Path(source)
         self.config = config or ACPConfig(cwd='/var/lib/sarah/acp/workspace')
@@ -35,6 +41,29 @@ class ACPRuntime(VoiceRuntime):
             device TEXT NOT NULL, conversation TEXT NOT NULL,
             backend TEXT NOT NULL, session TEXT NOT NULL, state TEXT NOT NULL,
             PRIMARY KEY(device,conversation), UNIQUE(backend,session))''')
+
+    IDLE_SECONDS = 300
+
+    async def _evict(self):
+        idle, self._idle = self._idle, None
+        if idle is not None and idle is not asyncio.current_task():
+            idle.cancel()
+            await asyncio.gather(idle, return_exceptions=True)
+        client, self._worker = self._worker, None
+        self._worker_key = None
+        if client is not None:
+            client.dispatch = None
+            await settle(asyncio.create_task(client.close()))
+
+    async def close(self):
+        self._closed = True
+        async with self._worker_lock:
+            await self._evict()
+
+    async def _expire(self):
+        await asyncio.sleep(self.IDLE_SECONDS)
+        async with self._worker_lock:
+            await self._evict()
 
     def legacy_migration_plan(self, *, device, conversation):
         """Operator-only dry-run fingerprint. Never called by request admission."""
@@ -150,7 +179,21 @@ class ACPRuntime(VoiceRuntime):
         row = self.store.db.execute(
             'SELECT backend,session,state FROM acp_sessions WHERE device=? AND conversation=?',
             (device, conversation)).fetchone()
-        if row and (row['backend'] != self.config.identity or row['state'] != 'ready'):
+        from .acp_launcher import PROFILE, validate_profile
+        if self.config.cwd == str(PROFILE/'workspace'):
+            try:
+                validate_profile()
+            except (OSError, ValueError):
+                if not self._worker_lock.locked():
+                    async with self._worker_lock:
+                        await self._evict()
+                raise ACPError('acp_reviewed_profile_required') from None
+        identity = self.config.identity
+        if row and (row['backend'] != identity or row['state'] != 'ready'):
+            if self._worker_lock.locked():
+                raise ACPError('acp_session_uncertain_or_changed')
+            async with self._worker_lock:
+                await self._evict()
             raise ACPError('acp_session_uncertain_or_changed')
         direct_rows=self._direct_rows(device,conversation)
         local_ids={r['id'] for r in direct_rows}
@@ -159,61 +202,99 @@ class ACPRuntime(VoiceRuntime):
             (device, conversation)).fetchall()
         if not row and ((history and not direct_rows) or any(r['id'] not in local_ids for r in prior)):
             raise ACPError('acp_backend_requires_new_conversation')
-        if direct_rows:
-            # Literal completed local dialogue; not a tool receipt or a replay.
-            import json
-            context=[{'user':r['transcript'],'assistant':r['detail']} for r in direct_rows[-4:]]
-            text='Completed local-clock dialogue (context only):\n'+json.dumps(context)+'\nCurrent user request:\n'+text
-        client = None
-        admitted = False
-        try:
-            async with asyncio.timeout(self.config.timeout):
-                client = await ACPClient.connect(self.config)
-                capabilities = await client.initialize()
-                if not isinstance(capabilities, dict) or capabilities.get('loadSession') is not True:
-                    raise ACPError('acp_session_load_unsupported')
-                from .acp_policy import identity, SCHEMAS
-                policy = await client.request('_sarah/policy', {})
-                if policy != {'policy': identity(), 'schemas': SCHEMAS}:
-                    raise ACPError('acp_policy_mismatch')
-                params = {'cwd': self.config.cwd, 'mcpServers': []}
-                if row:
-                    session_id = row['session']
-                    await client.request('session/load', {**params, 'sessionId': session_id})
+        if self._closed or self._worker_lock.locked():
+            raise ACPError('acp_worker_unavailable')
+        async with self._worker_lock:
+            client = None
+            admitted = False
+            success = False
+            try:
+                async with asyncio.timeout(self.config.timeout):
+                    key = (device, conversation, identity, self.config.cwd,
+                           row['session'] if row else None)
+                    client = self._worker
+                    if client is not None and (self._worker_key != key
+                            or (client.process is not None and client.process.returncode is not None)
+                            or client.reader.at_eof()):
+                        await self._evict()
+                        client = None
+                    if self._idle is not None:
+                        self._idle.cancel()
+                        await asyncio.gather(self._idle, return_exceptions=True)
+                        self._idle = None
+                    if client is None:
+                        client = await ACPClient.connect(self.config)
+                        self._worker = client
+                        capabilities = await client.initialize()
+                        if not isinstance(capabilities, dict) or capabilities.get('loadSession') is not True:
+                            raise ACPError('acp_session_load_unsupported')
+                        from .acp_policy import identity as policy_identity, SCHEMAS
+                        policy = await client.request('_sarah/policy', {})
+                        if policy != {'policy': policy_identity(), 'schemas': SCHEMAS}:
+                            raise ACPError('acp_policy_mismatch')
+                        params = {'cwd': self.config.cwd, 'mcpServers': []}
+                        if row:
+                            session_id = row['session']
+                            await client.request('session/load', {**params, 'sessionId': session_id})
+                        else:
+                            result = await client.request('session/new', params)
+                            session_id = result.get('sessionId')
+                            if (not isinstance(session_id, str) or not session_id or len(session_id) > 256
+                                    or any(ord(c) < 32 for c in session_id)):
+                                raise ACPError('acp_invalid_session')
+                            self.store.db.execute('INSERT INTO acp_sessions VALUES(?,?,?,?,?)',
+                                (device, conversation, identity, session_id, 'ready'))
+                        self._worker_key = (device, conversation, identity, self.config.cwd, session_id)
+                    else:
+                        session_id = row['session']
+                    claimed = self.store.db.execute(
+                        "UPDATE acp_sessions SET state='inflight' WHERE device=? AND conversation=? AND backend=? AND session=? AND state='ready'",
+                        (device, conversation, identity, session_id))
+                    if claimed.rowcount != 1:
+                        raise ACPError('acp_session_busy')
+                    admitted = True
+                    # Sync only new literal model-free dialogue, after durable ownership.
+                    self.store.db.execute('CREATE TABLE IF NOT EXISTS acp_local_dialogue(session TEXT, turn TEXT, PRIMARY KEY(session,turn))')
+                    fresh = [r for r in direct_rows if not self.store.db.execute(
+                        'SELECT 1 FROM acp_local_dialogue WHERE session=? AND turn=?', (session_id,r['id'])).fetchone()]
+                    if len(fresh) > 2000 or sum(len(r['transcript'])+len(r['detail']) for r in fresh) > 128000:
+                        raise ACPError('acp_local_history_bounds')
+                    client.turn_nonce = secrets.token_hex(32)
+                    await client.request('_sarah/turn', {'sessionId':session_id, 'nonce':client.turn_nonce,
+                        'dialogue':[m for r in fresh for m in (
+                            {'role':'user','content':r['transcript']}, {'role':'assistant','content':r['detail']})]})
+                    for r in fresh:
+                        self.store.db.execute('INSERT INTO acp_local_dialogue VALUES(?,?)',(session_id,r['id']))
+                    client.dispatch = dispatch
+                    answer = await client.prompt(session_id, text)
+                    # Unbind before ready; stale callbacks never retain a previous owner.
+                    client.dispatch = None
+                    client.turn_nonce = None
+                    self.store.db.execute(
+                        "UPDATE acp_sessions SET state='ready' WHERE device=? AND conversation=? AND backend=? AND session=? AND state='inflight'",
+                        (device, conversation, identity, session_id))
+                    admitted = False
+                    success = True
+                    return answer
+            except BaseException:
+                if admitted:
+                    self.store.db.execute(
+                        "UPDATE acp_sessions SET state='uncertain' WHERE device=? AND conversation=?",
+                        (device, conversation))
+                raise
+            finally:
+                if client is not None:
+                    client.dispatch = None
+                    client.turn_nonce = None
+                if not success:
+                    async def cleanup():
+                        if client is not None and admitted:
+                            await client.cancel()
+                        await self._evict()
+                    await settle(asyncio.create_task(cleanup()))
                 else:
-                    result = await client.request('session/new', params)
-                    session_id = result.get('sessionId')
-                    if (not isinstance(session_id, str) or not session_id or len(session_id) > 256
-                            or any(ord(c) < 32 for c in session_id)):
-                        raise ACPError('acp_invalid_session')
-                    self.store.db.execute('INSERT INTO acp_sessions VALUES(?,?,?,?,?)',
-                        (device, conversation, self.config.identity, session_id, 'ready'))
-                claimed = self.store.db.execute(
-                    "UPDATE acp_sessions SET state='inflight' WHERE device=? AND conversation=? AND state='ready'",
-                    (device, conversation))
-                if claimed.rowcount != 1:
-                    raise ACPError('acp_session_busy')
-                admitted = True
-                client.dispatch = dispatch
-                answer = await client.prompt(session_id, text)
-                self.store.db.execute(
-                    "UPDATE acp_sessions SET state='ready' WHERE device=? AND conversation=?",
-                    (device, conversation))
-                admitted = False
-                return answer
-        except BaseException:
-            if admitted:
-                self.store.db.execute(
-                    "UPDATE acp_sessions SET state='uncertain' WHERE device=? AND conversation=?",
-                    (device, conversation))
-            raise
-        finally:
-            if client is not None:
-                async def cleanup():
-                    if admitted:
-                        await client.cancel()
-                    await client.close()
-                await settle(asyncio.create_task(cleanup()))
+                    self._idle = asyncio.create_task(self._expire())
+
 
 
 def create_runtime(store, source, backend='codex'):

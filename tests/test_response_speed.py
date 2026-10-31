@@ -69,17 +69,17 @@ class ACPClockTests(unittest.IsolatedAsyncioTestCase):
   from types import SimpleNamespace
   with tempfile.TemporaryDirectory() as tmp:
    s=Store(Path(tmp)/'state.db');s.provision('test','a'*48);c=s.conversation('test')
-   a=ACPRuntime.__new__(ACPRuntime);a.store=s;a.config=SimpleNamespace(identity='test-policy',cwd='/isolated',timeout=2)
-   s.db.execute('CREATE TABLE acp_sessions(device TEXT,conversation TEXT,backend TEXT,session TEXT,state TEXT)')
+   a=ACPRuntime(s,'/not-used',SimpleNamespace(identity='test-policy',cwd='/isolated',timeout=2))
    make_app(s,SimpleNamespace(ready=True))
    a.check_direct_reply(device='test',conversation=c)
    t=s.admit('test',c,'clock','fixture');s.finish('test',t,'done',"It's 1:00 PM CDT.",'What time is it?')
    s.db.execute('INSERT INTO response_metrics VALUES(?,?,?)',(t,'direct_clock','{}'))
    a.check_direct_reply(device='test',conversation=c)
-   prompts=[]
+   prompts=[];contexts=[]
    class Client:
     async def initialize(self):return {'loadSession':True}
     async def request(self,name,params):
+     if name=='_sarah/turn':contexts.append(params['dialogue'])
      if name=='_sarah/policy':
       from bridge.acp_policy import identity,SCHEMAS
       return {'policy':identity(),'schemas':SCHEMAS}
@@ -89,7 +89,7 @@ class ACPClockTests(unittest.IsolatedAsyncioTestCase):
    async def connect(config):return Client()
    with patch('bridge.acp_runtime.ACPClient.connect',connect):
     answer=await a.reply_turn('Repeat that time',[],device='test',conversation=c)
-   self.assertEqual(answer,'Normal reply');self.assertIn("It's 1:00 PM CDT.",prompts[0]);self.assertTrue(prompts[0].endswith('Repeat that time'))
+   self.assertEqual(answer,'Normal reply');self.assertEqual(contexts[0][1]['content'],"It's 1:00 PM CDT.");self.assertEqual(prompts[0],'Repeat that time')
    s.db.execute("UPDATE acp_sessions SET state='uncertain'")
    with self.assertRaisesRegex(ACPError,'acp_session_uncertain_or_changed'):a.check_direct_reply(device='test',conversation=c)
-   s.close()
+   await a.close();s.close()

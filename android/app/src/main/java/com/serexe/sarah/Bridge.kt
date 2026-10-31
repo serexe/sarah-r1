@@ -68,7 +68,10 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
    override fun onResponse(call:Call,response:Response) {
     try {response.use {
      if(!continuation.isActive) return
-     if(it.code !in 200..299) throw Failure(it.code,"http_error")
+     if(it.code !in 200..299) {
+      val reason=try {it.body?.let {body->RequestDiagnostics.serverError(boundedJson(body).optString("error"))} ?: "other"} catch (_:Exception) {"other"}
+      throw Failure(it.code,reason)
+     }
      val parsed=boundedJson(it.body ?: throw IOException("Empty response"))
      if(continuation.isActive) continuation.resume(parsed)
     }} catch(e:Exception) {if(continuation.isActive) continuation.resumeWithException(e)}
@@ -76,20 +79,22 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
   })
  }
  private fun empty()="{}".toRequestBody("application/json".toMediaType())
+ override fun sendDiagnostics(payload:JSONObject):String=SafeDiagnostics.receipt(json("/v1/diagnostics","POST",payload.toString().toRequestBody("application/json".toMediaType())).getString("receipt"))
  override fun health():JSONObject=json("/v1/health")
  override fun create():String=json("/v1/conversations","POST",empty()).getString("conversation").also { require(Identity.valid(it)) }
  override fun submit(conversation:String,request:String,wav:ByteArray):String {
   require(Identity.valid(conversation) && Identity.valid(request))
-  return json("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request)).getString("turn").also { require(Identity.valid(it)) }
+  return json("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1")).getString("turn").also { require(Identity.valid(it)) }
  }
  suspend fun submitCancellable(conversation:String,request:String,wav:ByteArray):String {
   require(Identity.valid(conversation) && Identity.valid(request))
-  return jsonCancellable("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request)).getString("turn").also {require(Identity.valid(it))}
+  return jsonCancellable("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1")).getString("turn").also {require(Identity.valid(it))}
  }
- suspend fun pollCancellable(turn:String):JSONObject {require(Identity.valid(turn));return jsonCancellable("/v1/turns/$turn")}
- suspend fun audioCancellable(turn:String):ByteArray = suspendCancellableCoroutine { continuation ->
+ suspend fun pollCancellable(turn:String,after:Int=0):JSONObject {require(Identity.valid(turn) && after in 0..32);return jsonCancellable("/v1/turns/$turn",headers=mapOf("X-Audio-After" to after.toString()))}
+ suspend fun audioCancellable(turn:String,seq:Int?=null):ByteArray = suspendCancellableCoroutine { continuation ->
   require(Identity.valid(turn))
-  val request=Request.Builder().url(origin+"/v1/turns/$turn/audio").header("Authorization","Bearer $token").header("Cache-Control","no-store").build()
+  require(seq==null || seq in 0..31)
+  val request=Request.Builder().url(origin+"/v1/turns/$turn/audio"+(seq?.let {"/$it"} ?: "")).header("Authorization","Bearer $token").header("Cache-Control","no-store").build()
   val call=client.newCall(request)
   continuation.invokeOnCancellation {call.cancel()}
   if(!continuation.isActive) return@suspendCancellableCoroutine
@@ -109,6 +114,14 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
  }
  override fun lookup(request:String):JSONObject { require(Identity.valid(request));return json("/v1/requests/$request") }
  override fun poll(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn") }
+ override fun pollChunks(turn:String,after:Int):JSONObject {require(Identity.valid(turn) && after in 0..32);return json("/v1/turns/$turn",headers=mapOf("X-Audio-After" to after.toString()))}
+ override fun audioChunk(turn:String,seq:Int):ByteArray {
+  require(Identity.valid(turn) && seq in 0..31)
+  return call("/v1/turns/$turn/audio/$seq").second.use {
+   require(it.contentType()?.let {t->t.type=="audio" && t.subtype=="mpeg"}==true && it.contentLength() in -1..4194304)
+   Bounded.read(it.byteStream(),4194304).also {b->require(b.isNotEmpty())}
+  }
+ }
  override fun cancel(turn:String):JSONObject { require(Identity.valid(turn));return json("/v1/turns/$turn/cancel","POST",empty()) }
  override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {
   require(listOf(turn,conversation,nonce,hash).all(Identity::valid))

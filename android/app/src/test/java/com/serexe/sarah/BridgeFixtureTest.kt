@@ -13,6 +13,26 @@ import javax.net.ssl.SSLHandshakeException
 /** Local synthetic HTTPS bridge. No personal endpoint, credentials, or live calls. */
 class BridgeFixtureTest {
  private val secret="x".repeat(48)
+ @Test fun rejectedAsyncSubmissionRetainsSafeReasonAndLookupUsesExactSavedUuidWithoutReplay()=kotlinx.coroutines.runBlocking {
+  val ca=HeldCertificate.Builder().certificateAuthority(1).commonName("Synthetic CA").build()
+  val leaf=HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").signedBy(ca).build()
+  val server=MockWebServer();server.useHttps(HandshakeCertificates.Builder().heldCertificate(leaf,ca.certificate).build().sslSocketFactory(),false);server.start()
+  try {
+   val api=Bridge("https://localhost:${server.port}",secret,ca.certificate.encoded)
+   val request="12345678-1234-1234-1234-123456789abc"
+   for((body,expected) in listOf("{\"error\":\"unauthorized\"}" to "unauthorized","{\"error\":\"not_found\"}" to "not_found","{\"error\":\"invalid_identifier\"}" to "invalid_identifier","{\"error\":\"private-token-and-body\"}" to "other","not json" to "other")) {
+    server.enqueue(MockResponse().setResponseCode(403).setBody(body))
+    try {api.submitCancellable("c1",request,Wav.encode(ByteArray(8000)));fail("Expected 403")} catch(e:Bridge.Failure) {assertEquals(403,e.status);assertEquals(expected,e.reason);assertFalse(e.message!!.contains("private-token-and-body"))}
+    val post=server.takeRequest(2,TimeUnit.SECONDS)!!
+    assertEquals("POST",post.method);assertEquals("/v1/turns",post.path);assertEquals(request,post.getHeader("Idempotency-Key"));assertEquals("c1",post.getHeader("X-Conversation"));assertEquals("Bearer $secret",post.getHeader("Authorization"))
+    assertEquals("audio/wav",post.getHeader("Content-Type"))
+   }
+   server.enqueue(MockResponse().setResponseCode(403).setBody("{\"error\":\"not_found\"}"))
+   try {api.lookup(request);fail("Expected not_found")} catch(e:Bridge.Failure) {assertEquals("not_found",e.reason)}
+   val get=server.takeRequest(2,TimeUnit.SECONDS)!!
+   assertEquals("GET",get.method);assertEquals("/v1/requests/$request",get.path);assertNull(get.getHeader("X-Audio-After"));assertNull(get.getHeader("Idempotency-Key"));assertEquals(6,server.requestCount)
+  } finally {server.shutdown()}
+ }
  @Test fun routesAndReadOnlyRecovery() {
   val ca=HeldCertificate.Builder().certificateAuthority(1).commonName("Synthetic fixture CA").build()
   val leaf=HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").signedBy(ca).build()

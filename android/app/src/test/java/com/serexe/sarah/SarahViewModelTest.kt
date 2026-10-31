@@ -25,17 +25,22 @@ class SarahViewModelTest {
   override fun reset() {value=JSONObject()}
  }
  private class Wire:BridgePort {
+  var reports=0;var reportFailure:Exception?=null;var lastReport:JSONObject?=null
+  override fun sendDiagnostics(payload:JSONObject):String {reports++;lastReport=payload;reportFailure?.let {throw it};return "ABCDEF012345ABCDEF012345"}
   var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0
-  var creates=0;var cancels=0;var confirms=0
+  var creates=0;var cancels=0;var confirms=0;var lookupFailure:Exception?=null
   var onSubmit:(()->Unit)?=null
   var onConfirm:(()->Unit)?=null
   var onAudio:(()->Unit)?=null
+  val chunks=mutableListOf<Int>();var chunkMode=false
   var row=JSONObject().put("id","t1").put("conversation","c1").put("state","done").put("detail","reply").put("audio",false)
   override fun health():JSONObject {failure?.let {throw it};return JSONObject().put("protocol",1).put("ready",healthy)}
   override fun create():String {creates++;return "c1"}
   override fun submit(conversation:String,request:String,wav:ByteArray):String {posts++;onSubmit?.invoke();return "t1"}
-  override fun lookup(request:String):JSONObject {lookups++;return row}
+  override fun lookup(request:String):JSONObject {lookups++;lookupFailure?.let {throw it};return row}
   override fun poll(turn:String)=row
+  override fun pollChunks(turn:String,after:Int):JSONObject {if(chunkMode && after==2) row.put("state","done");return row}
+  override fun audioChunk(turn:String,seq:Int):ByteArray {chunks.add(seq);return byteArrayOf(1)}
   override fun cancel(turn:String):JSONObject {cancels++;return row}
   override fun confirm(turn:String,conversation:String,nonce:String,hash:String,accept:Boolean):JSONObject {confirms++;onConfirm?.invoke();return row}
   override fun audio(turn:String):ByteArray {onAudio?.invoke();return byteArrayOf(1)}
@@ -57,6 +62,120 @@ class SarahViewModelTest {
   val memory=Memory(initial,guardedStore,loadFailure);val wire=Wire();val mic=Mic();lateinit var sound:Sound;var starts=0;var rearms=0
   val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},abort,awaitPollSlot={})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
+ }
+ @Test fun rejectedSubmissionIsDurableAndMissingLookupNeverClearsOrReplaysIt()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.onSubmit={throw Bridge.Failure(403,"not_found")}
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(1,f.wire.posts);assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+  assertEquals("submit",f.memory.value.getString("requestPhase"));assertEquals(403,f.memory.value.getInt("requestHttp"));assertEquals("not_found",f.memory.value.getString("requestServerError"))
+  assertTrue(f.vm.ui.value.status.contains("Saved identity not found for this device"));assertFalse(f.vm.ui.value.status.contains("Authentication"))
+  val request=f.memory.value.getString("request");val conversation=f.memory.value.getString("conversation")
+  f.vm.onBackground();val restored=fixture(f.memory.value);restored.vm.onForeground()
+  restored.wire.lookupFailure=Bridge.Failure(403,"not_found");restored.vm.checkExisting()
+  assertEquals(1,restored.wire.lookups);assertEquals("uncertain",restored.vm.ui.value.phase);assertFalse(restored.vm.ui.value.canCapture)
+  assertEquals(request,restored.memory.value.getString("request"));assertEquals(conversation,restored.memory.value.getString("conversation"));assertEquals("",restored.memory.value.getString("turn"))
+  assertEquals(0,restored.wire.posts);assertEquals(0,restored.wire.creates);assertEquals(0,restored.wire.cancels);assertEquals(0,restored.wire.confirms);assertTrue(restored.wire.chunks.isEmpty());assertEquals(0,restored.sound.played)
+  restored.vm.onBackground()
+ }
+ @Test fun sendDiagnosticsExplicitOnlyAndNoRecoveryMutation() {
+  for(failure in listOf(null,Bridge.Failure(403,"private-token"),Bridge.Failure(404,"raw-url"),Bridge.Failure(429,"raw-body"))) {
+   val f=fixture(persisted("uncertain").put("request","abc").put("turn","raw-turn").put("requestServerError","not_found").put("requestHttp",403).put("audioNext",2).put("chunkInFlight",true).put("responseTimings",JSONObject().put("secret","private-timing")))
+   val before=f.memory.value.toString();val writes=f.memory.writes;val ui=f.vm.ui.value
+   val text=f.vm.shareDiagnostics(41)
+   for(secret in listOf("raw-turn","fixture.invalid","x".repeat(48),"private-timing","responseTimings")) assertFalse(text.contains(secret))
+   assertTrue(text.contains("ba7816bf8f01"));assertEquals(0,f.wire.reports)
+   f.wire.reportFailure=failure;f.vm.sendDiagnostics(41)
+   assertEquals(1,f.wire.reports);assertEquals(before,f.memory.value.toString());assertEquals(writes,f.memory.writes);assertEquals(ui,f.vm.ui.value)
+   if(failure==null) assertTrue(f.vm.diagnosticDelivery.value.contains("ABCDEF012345ABCDEF012345")) else assertTrue(f.vm.diagnosticDelivery.value.contains("Share diagnostics"))
+   assertFalse(f.vm.diagnosticDelivery.value.contains("private-token"));assertEquals(0,f.wire.posts);assertEquals(0,f.wire.lookups);assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.creates);assertEquals(0,f.wire.confirms);assertTrue(f.wire.chunks.isEmpty());assertEquals(0,f.sound.played)
+   f.vm.onBackground()
+  }
+ }
+ @Test fun statusDiagnosticCodesPersistAndRemainBlockedWithoutReplay() {
+  for((raw,expected) in listOf("unauthorized" to "unauthorized","not_found" to "not_found","invalid_identifier" to "invalid_identifier","private-body-token" to "other")) {
+   val f=fixture(persisted("uncertain").put("request","saved-private-request").put("turn","saved-private-turn").put("audioNext",2).put("chunkInFlight",true))
+   f.vm.onForeground();assertEquals(0,f.wire.lookups)
+   f.wire.lookupFailure=Bridge.Failure(403,raw);f.vm.checkExisting()
+   assertEquals(1,f.wire.lookups);assertEquals(expected,f.memory.value.getString("requestServerError"))
+   assertTrue(f.vm.ui.value.status.contains("HTTP 403 · $expected"));assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture)
+   assertEquals(2,f.memory.value.getInt("audioNext"));assertTrue(f.memory.value.getBoolean("chunkInFlight"))
+   val snapshot=f.vm.diagnosticSnapshot(40)
+   assertTrue(snapshot.contains("requestServerError=$expected"));assertFalse(snapshot.contains("saved-private-request"));assertFalse(snapshot.contains("saved-private-turn"));assertFalse(snapshot.contains("private-body-token"))
+   f.vm.clearLocal();f.vm.onBackground();val restored=fixture(f.memory.value);restored.vm.onForeground()
+   assertTrue(restored.vm.ui.value.status.contains("HTTP 403 · $expected"));assertTrue(restored.vm.diagnosticSnapshot(40).contains("requestServerError=$expected"))
+   assertEquals(0,restored.wire.lookups);assertEquals(0,f.wire.posts);assertEquals(0,f.wire.cancels);assertEquals(0,f.wire.confirms);assertEquals(0,f.wire.creates);assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty())
+   restored.vm.onBackground()
+  }
+ }
+ @Test fun captureDiagnosticsIsLocalOnlyAndMasksAllSavedIdentities() {
+  val f=fixture(persisted("uncertain").put("request","abc").put("turn","").put("conversation","private-conversation").put("token","private-token").put("requestServerError","injected-body").put("messages",org.json.JSONArray().put(JSONObject().put("who","YOU").put("text","private-transcript"))))
+  val before=f.memory.value.toString();val writes=f.memory.writes
+  val snapshot=f.vm.diagnosticSnapshot(40)
+  assertTrue(snapshot.contains("savedRequest present=true length=3 sha256=ba7816bf8f01"));assertTrue(snapshot.contains("savedTurn present=true length=0 sha256=e3b0c44298fc"));assertTrue(snapshot.contains("savedConversation present=true length=20 sha256="));assertTrue(snapshot.contains("requestServerError=other"))
+  for(secret in listOf("private-conversation","private-token","fixture.invalid","private-transcript","injected-body")) assertFalse(snapshot.contains(secret))
+  assertEquals(before,f.memory.value.toString());assertEquals(writes,f.memory.writes);assertEquals(0,f.wire.lookups);assertEquals(0,f.wire.posts);assertEquals(0,f.wire.creates);assertEquals(0,f.wire.cancels);assertEquals(0,f.sound.played)
+  f.vm.onBackground()
+ }
+ @Test fun uncertainStatusWorksWhileIdleWakeListenerWouldOtherwiseSilentlyBlockIt() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.vm.onForeground()
+  try {
+   HeySarahListenerService.status.value="Wake listening"
+   f.wire.row.put("state","error").put("detail","Voice request failed (TimeoutError).")
+   f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals("ready",f.vm.ui.value.phase)
+   assertEquals(0,f.wire.posts);assertEquals(0,f.sound.played)
+  } finally {HeySarahListenerService.status.value="off";f.vm.onBackground()}
+ }
+ @Test fun persistedTerminalErrorAfterClearHistoryAndRecreateRecoversWithoutReplay() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1").put("audioNext",1).put("chunkInFlight",true))
+  f.vm.onForeground();f.vm.clearLocal()
+  val recreated=fixture(f.memory.value)
+  recreated.wire.row.put("state","error").put("detail","Voice request failed (TimeoutError). Any dispatched action outcome may be unknown; no automatic retry.")
+  recreated.vm.onForeground();recreated.vm.checkExisting()
+  assertEquals("ready",recreated.vm.ui.value.phase);assertTrue(recreated.vm.ui.value.canCapture)
+  assertTrue(recreated.vm.ui.value.status.contains("Request failed"));assertTrue(recreated.vm.ui.value.status.contains("TimeoutError"))
+  assertEquals(1,recreated.vm.ui.value.transcript.size);assertEquals(0,recreated.memory.value.optInt("audioNext"));assertFalse(recreated.memory.value.optBoolean("chunkInFlight"))
+  assertEquals(1,recreated.wire.lookups);assertEquals(0,recreated.wire.posts);assertEquals(0,recreated.wire.cancels);assertEquals(0,recreated.sound.played);recreated.vm.onBackground();f.vm.onBackground()
+ }
+ @Test fun statusHttpErrorVisibleAndDurableWithoutPrivateBodyOrReplay() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.vm.onForeground()
+  f.wire.lookupFailure=Bridge.Failure(429,"private-response-token");f.vm.checkExisting()
+  assertEquals("uncertain",f.vm.ui.value.phase);assertTrue(f.vm.ui.value.status.contains("HTTP 429"));assertFalse(f.vm.ui.value.status.contains("private-response-token"));assertFalse(f.vm.ui.value.canCapture)
+  f.vm.clearLocal();val recreated=fixture(f.memory.value);assertTrue(recreated.vm.ui.value.status.contains("HTTP 429"))
+  assertEquals(0,f.wire.posts);assertEquals(0,f.sound.played);recreated.vm.onBackground();f.vm.onBackground()
+ }
+ @Test fun interruptedOffscreenChunkHandoffNeverAcknowledgesOrReplaysUnknown() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1").put("audioNext",1).put("chunkInFlight",true))
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2));f.vm.onForeground();f.vm.checkExisting()
+  assertEquals("uncertain",f.vm.ui.value.phase);assertFalse(f.vm.ui.value.canCapture);assertEquals(1,f.memory.value.optInt("audioNext"));assertTrue(f.memory.value.optBoolean("chunkInFlight"));assertEquals(0,f.sound.played);assertTrue(f.wire.chunks.isEmpty());assertEquals(0,f.wire.posts)
+  f.wire.row.put("state","cancelled");f.vm.cancelTurn();assertEquals(1,f.wire.cancels);assertEquals(0,f.sound.played);f.vm.onBackground()
+ }
+ @Test fun statusLookupDoneWithAudioNeverDownloadsOrPlays() {
+  val f=fixture(persisted("uncertain").put("request","r1").put("turn","t1"));f.wire.row.put("audio",true)
+  f.wire.onAudio={fail("Recovery must not fetch audio")};f.vm.onForeground();f.vm.checkExisting()
+  assertEquals("ready",f.vm.ui.value.phase);assertEquals(0,f.sound.played);assertEquals(0,f.wire.posts);f.vm.onBackground()
+ }
+ @Test fun sentenceChunksPlaySequentiallyAndOnlyRearmAfterLastAcknowledgement()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.chunkMode=true
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2).put("complete",true))
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(listOf(0),f.wire.chunks);assertEquals("playing",f.vm.ui.value.phase)
+  assertFalse(f.vm.ui.value.canCapture);f.sound.finish();delay(30)
+  assertEquals(listOf(0,1),f.wire.chunks);assertEquals("playing",f.vm.ui.value.phase)
+  f.sound.finish();delay(30);assertEquals("done",f.vm.ui.value.phase)
+  assertEquals(2,f.sound.played);f.vm.onBackground()
+ }
+ @Test fun stopDuringFirstChunkCancelsServerAndNeverPlaysQueuedChunk()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.row.put("state","speaking").put("audio_chunks",JSONObject().put("count",2))
+  f.vm.onForeground();f.vm.startCapture();f.mic.end.complete(Unit);delay(30)
+  assertEquals(listOf(0),f.wire.chunks)
+  f.wire.row.put("state","cancelled");f.vm.stopAudio();f.vm.stopAudio();f.sound.finish();delay(30)
+  assertEquals("cancelled",f.vm.ui.value.phase);assertEquals(1,f.wire.cancels)
+  assertEquals(listOf(0),f.wire.chunks);assertEquals(1,f.sound.played)
+  assertFalse(f.memory.value.optBoolean("chunkInFlight"));assertTrue(f.vm.ui.value.canCapture)
+  f.vm.onBackground();val followup=fixture(f.memory.value);followup.vm.onForeground();followup.mic.endpointReached=true;followup.vm.startCapture();followup.mic.end.complete(Unit);delay(30)
+  assertEquals(1,followup.wire.posts);assertEquals("done",followup.vm.ui.value.phase);assertEquals(0,followup.sound.played);followup.vm.onBackground()
  }
  @Test fun localSnapshotUsesRealLeaseReleaseAndHealthStateWithoutSensitiveFields() {
   val secret="dangerous-private-text"

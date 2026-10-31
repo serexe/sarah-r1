@@ -72,6 +72,7 @@ class ACPClient:
         self.parts = []
         self.answer_chars = 0
         self.dispatch = None
+        self.turn_nonce = None
 
     @classmethod
     async def connect(cls, config):
@@ -141,7 +142,8 @@ class ACPClient:
                 from .acp_policy import identity, validate
                 p = message.get('params')
                 if (not self.collecting or self.dispatch is None or not isinstance(p, dict)
-                        or set(p) != {'sessionId', 'policy', 'name', 'arguments'}
+                        or set(p) != {'sessionId', 'policy', 'name', 'arguments', 'nonce'}
+                        or not self.turn_nonce or p.get('nonce') != self.turn_nonce
                         or p['sessionId'] != self.session_id or p['policy'] != identity()):
                     raise ACPError('acp_dispatch_binding_denied')
                 validate(p['name'], p['arguments'])
@@ -182,13 +184,16 @@ class ACPClient:
         return result.get('agentCapabilities') or {}
 
     async def prompt(self, session_id, text):
+        self.total_bytes = self.frames = 0
         self.session_id = session_id
         self.parts = []
         self.answer_chars = 0
         self.collecting = True
-        result = await self.request('session/prompt', {
-            'sessionId': session_id, 'prompt': [{'type': 'text', 'text': text}]})
-        self.collecting = False
+        try:
+            result = await self.request('session/prompt', {
+                'sessionId': session_id, 'prompt': [{'type': 'text', 'text': text}]})
+        finally:
+            self.collecting = False
         answer = ''.join(self.parts).strip()
         if result.get('stopReason') != 'end_turn' or not answer:
             raise ACPError('acp_incomplete_turn')

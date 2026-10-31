@@ -274,10 +274,10 @@ class VoiceRuntime:
         with tempfile.TemporaryDirectory(prefix='.r1-tts-', dir=path.parent) as tmp:
             wav=Path(tmp)/'speech.wav'
             encoded=Path(tmp)/'speech.mp3'
-            await _tts_process(str(root/'venv/bin/python'), '-I',
-                str(Path(__file__).with_name('kokoro_tts.py')), '--output', str(wav),
-                input=speech_text(text).encode(), failure='local_tts_failed',
-                stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
+            from .warm_voice import WarmVoice
+            if not hasattr(self, '_warm_voice'):
+                self._warm_voice = WarmVoice(root/'venv/bin/python', Path(__file__).with_name('kokoro_tts.py'))
+            await self._warm_voice.synthesize(speech_text(text), wav)
             await _tts_process('/usr/bin/ffmpeg','-nostdin','-loglevel','error','-y','-i',str(wav),'-codec:a','libmp3lame',str(encoded),
                 failure='tts_encoding_failed',stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL)
             if not encoded.is_file() or encoded.stat().st_size == 0:

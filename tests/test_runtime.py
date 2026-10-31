@@ -178,6 +178,7 @@ asyncio.run(main())
         self.config = ACPConfig(cwd=self.tmp.name)
         self.calls = []
         self.clients = []
+        self.adapters = []
         self.stall = False
         self.disconnect_prompt = False
         self.bad_policy = False
@@ -204,6 +205,8 @@ asyncio.run(main())
                 elif method == '_sarah/policy':
                     from bridge.acp_policy import identity, SCHEMAS
                     result = {'policy': 'wrong' if owner.bad_policy else identity(), 'schemas': SCHEMAS}
+                elif method == '_sarah/turn':
+                    result = {}
                 elif method == 'session/new':
                     result = {'sessionId': 'synthetic-' + str(len(owner.clients))}
                 elif method == 'session/load':
@@ -231,8 +234,14 @@ asyncio.run(main())
         self.clients.append(client)
         return client
 
+    async def asyncTearDown(self):
+        for adapter in self.adapters:
+            await adapter.close()
+
     def adapter(self):
-        return ACPRuntime(self.store, '/not-used', self.config)
+        adapter = ACPRuntime(self.store, '/not-used', self.config)
+        self.adapters.append(adapter)
+        return adapter
 
     async def bound(self, adapter=None, device='a', conversation=None, history=()):
         return await (adapter or self.adapter())._reply_bound('hello', history,
@@ -253,6 +262,8 @@ asyncio.run(main())
         self.assertEqual(methods.count('session/load'), 1)
         sessions = self.store.db.execute('SELECT session FROM acp_sessions').fetchall()
         self.assertEqual(len({r['session'] for r in sessions}), 2)
+        for adapter in self.adapters:
+            await adapter.close()
         self.assertTrue(all(c.writer.closed for c in self.clients))
 
     async def test_permission_and_client_execution_denied(self):
@@ -285,8 +296,9 @@ asyncio.run(main())
             seen.append((name,args));return {'reply':'actual owner output'}
         client.dispatch = dispatch
         client.session_id = 'bound'
+        client.turn_nonce = 'current'
         request = {'method':'_sarah/dispatch','id':'tool','params':{
-            'sessionId':'bound','policy':identity(),'name':'ha_get_state',
+            'sessionId':'bound','policy':identity(),'nonce':'current','name':'ha_get_state',
             'arguments':{'entity_id':'light.test'}}}
         with self.assertRaisesRegex(ACPError,'acp_dispatch_binding_denied'):
             await client.handle_agent(request)

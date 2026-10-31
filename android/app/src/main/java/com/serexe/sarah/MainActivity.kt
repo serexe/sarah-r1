@@ -229,7 +229,7 @@ class MainActivity:ComponentActivity() {
     CompanionWaveform(ui.phase,vm,Modifier.weight(1f).fillMaxWidth())
     // Only exceptional/large-font action content scrolls. No outer screen scrolling.
     Column(Modifier.widthIn(max=340.dp).heightIn(max=actionMaxHeight).verticalScroll(rememberScrollState())) {
-     if(ui.phase=="error") Text(ui.status,style=MaterialTheme.typography.bodySmall)
+     if(ui.phase in setOf("error","uncertain","ready")) Text(ui.status,style=MaterialTheme.typography.bodySmall)
      ActionPanel(ui,vm,onMic,denied,onPermissions)
      if(ui.phase in setOf("finalizing","uploading","reply_audio_pending","cancelling","creating")) {
       OutlinedButton(onClick={},enabled=false,modifier=Modifier.heightIn(min=48.dp)) {Text("■ Stop unavailable during $state")}
@@ -315,6 +315,16 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
   Text("Local diagnostics · not a fix",style=MaterialTheme.typography.labelLarge)
   Button(onClick={diagnostic=vm.diagnosticSnapshot(buildCode)},modifier=Modifier.heightIn(min=48.dp)) {Text("Capture diagnostics")}
   diagnostic?.let {Text(it,style=MaterialTheme.typography.bodySmall)}
+  Spacer(Modifier.height(16.dp))
+  Text("Send / Share includes only app build, fixed error code, HTTP status, phase, chunk ACK progress, and saved ID presence/length/SHA256 prefix. No tokens, URLs, transcripts, audio or raw IDs. Explicit tap only; no automatic retry. Not a recovery action.")
+  Button(onClick={vm.sendDiagnostics(buildCode)},modifier=Modifier.heightIn(min=48.dp)) {Text("Send diagnostics")}
+  val delivery by vm.diagnosticDelivery.collectAsState()
+  Text(delivery)
+  OutlinedButton(onClick={
+   val intent=android.content.Intent(android.content.Intent.ACTION_SEND).apply {type="text/plain";putExtra(android.content.Intent.EXTRA_TEXT,vm.shareDiagnostics(buildCode))}
+   context.startActivity(android.content.Intent.createChooser(intent,"Share sanitized diagnostics"))
+  },modifier=Modifier.heightIn(min=48.dp)) {Text("Share diagnostics")}
+  Text(vm.shareDiagnostics(buildCode),style=MaterialTheme.typography.bodySmall)
  }
 }
 @Composable private fun Status(ui:SarahViewModel.Ui) {
@@ -324,18 +334,28 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
  }
 }
 @Composable private fun ActionPanel(ui:SarahViewModel.Ui,vm:SarahViewModel,onMic:()->Unit,denied:Boolean,onSettings:()->Unit) {
+ var recoveryConfirm by remember { mutableStateOf(false) }
+ if(recoveryConfirm && ui.phase=="uncertain") AlertDialog(
+  onDismissRequest={recoveryConfirm=false},
+  title={Text("Clear only approved local tracking?")},
+  text={Text("Only the exact approved missing request can pass. Stop Hey Sarah first. A fresh authenticated status check must return not_found, with no admitted turn or active audio. Keeps history, conversation, pairing, permissions, action records and audio ACKs. Never resends the old request. Any mismatch or network/auth failure keeps tracking blocked.")},
+  confirmButton={TextButton(onClick={recoveryConfirm=false;vm.recoverApprovedLocalRequest()}) {Text("Check & clear approved tracking")}},
+  dismissButton={TextButton(onClick={recoveryConfirm=false}) {Text("Keep tracking")}}
+ )
  Column(Modifier.fillMaxWidth().imePadding().padding(bottom=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
   if(ui.phase=="recording") {
    Text(if(ui.status.startsWith("Starting microphone")) "Microphone starting · wait for cue" else "Microphone active · adaptive speech pause · maximum 30 seconds",style=MaterialTheme.typography.labelMedium)
    Button(onClick=vm::send,modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("■ Stop & send",style=MaterialTheme.typography.titleMedium)}
    OutlinedButton(onClick=vm::discard,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Discard recording")}
   } else if(ui.phase=="playing") {
-   Text("Stops sound only · does not cancel completed work")
-   Button(onClick=vm::stopAudio,modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("■ Stop audio")}
+   Text("Stops current speech and remaining generation · no action rollback")
+   Button(onClick=vm::stopAudio,modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("■ Stop")}
   } else if(ui.phase=="uncertain") {
    Text("No automatic resend. Server actions may already have happened.")
    Button(onClick=vm::checkExisting,modifier=Modifier.fillMaxWidth().heightIn(min=64.dp)) {Text("Check existing request status")}
+   OutlinedButton(onClick={recoveryConfirm=true},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Recover approved local request")}
    OutlinedButton(onClick=vm::reconnect,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Check connection")}
+   TextButton(onClick=vm::cancelTurn) {Text("■ Stop server turn (no rollback)")}
   } else if(ui.phase=="confirming" && ui.confirmation!=null) {
    Text("Server confirmation: ${ui.confirmation.optString("label").take(200)}")
    Text("Accepting is not proof action succeeded.")

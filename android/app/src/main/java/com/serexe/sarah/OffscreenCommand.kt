@@ -26,6 +26,8 @@ internal class OffscreenCommand(
  private var running=false
  private var recording:Deferred<Unit>?=null
  private var preparing:Deferred<Unit>?=null
+ private var activeBridge:Bridge?=null
+ private var activeTurn:String?=null
  private val monitor=Executors.newSingleThreadScheduledExecutor {r->Thread(r,"sarah-command-safety").apply {isDaemon=true}}
  // One monotonic command window covers capture, network, pending native prepare and playback.
  private fun eligible()=active() && deadline.valid(SystemClock.elapsedRealtime()) && AudioEligibility.allowed(context,true) && NotificationAvailability.allowed(context)
@@ -46,9 +48,17 @@ internal class OffscreenCommand(
   }
   CommandCleanup.launchOwned(scope) {
    try {run(state)} catch (_:CancellationException) {stage("discarded")}
-   catch (_:Exception) {stage("error")}
+   catch (e:Exception) {
+    val category=when(e) {is Bridge.Failure->"http";is java.net.SocketTimeoutException->"timeout";is java.io.IOException->"network";else->"interrupted"}
+    val serverError=(e as? Bridge.Failure)?.let {RequestDiagnostics.serverError(it.reason)} ?: "none"
+    state.put("phase","uncertain").put("requestFailure",category).put("requestHttp",(e as? Bridge.Failure)?.status ?: 0).put("requestServerError",serverError).put("status","Background command interrupted ($category${(e as? Bridge.Failure)?.let {" · HTTP ${it.status} · $serverError"} ?: ""}). Check existing request; never resend.")
+    runCatching {Vault(context,this).save(state)};stage("uncertain")
+   }
    finally {
     monitor.shutdownNow();capture?.discard()
+    if(state.optString("phase")!="done") withContext(NonCancellable+Dispatchers.IO) {
+     activeTurn?.let {turn->runCatching {activeBridge?.cancel(turn)}}
+    }
     // Cancellation is not cleanup acknowledgment. Keep service/lease until native release returns.
     val clean=CommandCleanup.await(recording,{capture?.releaseComplete ?: true},
      playback?.stopAcknowledgement() ?: java.util.concurrent.CompletableFuture.completedFuture(true),preparing=preparing)
@@ -88,26 +98,50 @@ internal class OffscreenCommand(
   val conversation=state.getString("conversation")
   val request=Identity.new()
   // Persist request identity and uncertain outcome before network bytes leave process.
-  state.put("request",request).put("turn","").put("phase","uncertain")
+  state.put("request",request).put("turn","").put("phase","uncertain").put("requestPhase","submit").put("requestHttp",0).put("requestFailure","none").put("requestServerError","none").put("audioNext",0).put("chunkInFlight",false)
    .put("fingerprint",MessageDigest.getInstance("SHA-256").digest(wav).joinToString("") {"%02x".format(it)})
   vault.save(state)
   if(!eligible()) return
   val bridge=Bridge(state.getString("origin"),state.getString("token"),state.optString("ca","").takeIf {it.isNotEmpty()}?.let {android.util.Base64.decode(it,android.util.Base64.DEFAULT)})
+  activeBridge=bridge
   stage("uploading")
   if(!eligible()) return
   responseTiming.mark("upload_start_ms")
   val turn=bridge.submitCancellable(conversation,request,wav)
+  activeTurn=turn
   responseTiming.mark("upload_ack_ms")
   if(!eligible()) return
-  state.put("turn",turn);vault.save(state);stage("polling")
+  state.put("turn",turn).put("requestPhase","poll");vault.save(state);stage("polling")
   val deadline=System.nanoTime()+136_000_000_000L
+  var nextChunk=state.optInt("audioNext",0)
   repeat(140) { attempt ->
    if(System.nanoTime()>=deadline) {stage("uncertain");return}
    ResultPolling.awaitSlot()
    if(!eligible()) return
-   val row=bridge.pollCancellable(turn)
+   val row=bridge.pollCancellable(turn,nextChunk)
    if(!eligible()) return
    if(row.optString("id")!=turn || row.optString("conversation")!=conversation) {stage("uncertain");return}
+   val chunks=row.optJSONObject("audio_chunks")
+   if(chunks!=null && row.optString("state")=="speaking") {
+    val count=chunks.optInt("count",-1);check(count in nextChunk..32)
+    if(nextChunk<count) {
+     ResultPolling.awaitSlot();if(!eligible()) return
+     val bytes=bridge.audioCancellable(turn,nextChunk)
+     if(!eligible()) return
+     val done=CompletableDeferred<Boolean>()
+     val p=Playback(context) {done.complete(it)}
+     p.eligibility={scope.isActive && eligible()};playback=p
+     state.put("chunkInFlight",true).put("requestPhase","playback").put("status","Playback interrupted; completion unknown. Check existing request; never resend.");vault.save(state)
+     val prepare=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {p.play(bytes)}
+     preparing=prepare;prepare.start();prepare.await()
+     currentCoroutineContext().ensureActive();if(!eligible()) return
+     stage("speaking")
+     if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
+     nextChunk++
+     state.put("audioNext",nextChunk).put("chunkInFlight",false);vault.save(state)
+     return@repeat
+    }
+   }
    when(row.optString("state")) {
     "done" -> {
      responseTiming.mark("done_observed_ms")
@@ -134,6 +168,7 @@ internal class OffscreenCommand(
       playback=p
       currentCoroutineContext().ensureActive()
       // Native prepare may block; never run it on the service/main dispatcher.
+      state.put("chunkInFlight",true).put("requestPhase","playback").put("status","Playback interrupted; completion unknown. Check existing request; never resend.");vault.save(state)
       val prepare=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {p.play(bytes)}
       preparing=prepare;prepare.start();prepare.await()
       responseTiming.mark("playback_prepared_ms")
@@ -143,6 +178,7 @@ internal class OffscreenCommand(
       stage("speaking")
       // Preserve a per-command playback cap even when listener opt-in has no expiry.
       if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
+      state.put("chunkInFlight",false).put("status","Reply finished");vault.save(state)
      }
      stage("done");return
     }

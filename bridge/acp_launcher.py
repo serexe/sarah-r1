@@ -5,6 +5,7 @@ Provider resolver reuses supported shared global Codex OAuth pool, including
 supported token rotation and auth bookkeeping; profile is not an OAuth sandbox.
 """
 import asyncio
+from contextvars import ContextVar
 import contextlib
 import json
 import os
@@ -52,6 +53,8 @@ def compose(loop, db, runtime_resolver=None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from .acp_policy import NAMES, SCHEMAS, TOOLSET, GUIDANCE, identity, validate, normalized
 
+    turn_owner = ContextVar("sarah_turn_owner", default=None)
+
     class ScopedAgent(AIAgent):
         def run_conversation(self, user_message, system_message=None,
                              conversation_history=None, task_id=None,
@@ -70,6 +73,7 @@ def compose(loop, db, runtime_resolver=None):
                 'Use this sampled clock for current time and today/tomorrow; '
                 'historical timestamps are not current. This is a turn-start '
                 'snapshot, not a continuously running clock.\n\n')
+            turn_owner.set(getattr(self, "_sarah_nonce", None))
             return super().run_conversation(
                 context + user_message, system_message=system_message,
                 conversation_history=conversation_history, task_id=task_id,
@@ -90,10 +94,11 @@ def compose(loop, db, runtime_resolver=None):
         sid = kwargs.get('task_id')
         server = holder['server']
         state = server.session_manager.get_session(sid) if sid else None
-        if state is None or not state.is_running or state.cancel_event.is_set():
+        if (state is None or not state.is_running or state.cancel_event.is_set()
+                or not turn_owner.get() or turn_owner.get() != getattr(state.agent, '_sarah_nonce', None)):
             raise ValueError('acp_no_active_turn')
         future = asyncio.run_coroutine_threadsafe(server._conn.ext_method('sarah/dispatch', {
-            'sessionId': sid, 'policy': identity(), 'name': name, 'arguments': args}), loop)
+            'sessionId': sid, 'policy': identity(), 'name': name, 'arguments': args, 'nonce': turn_owner.get()}), loop)
         try:
             return json.dumps(future.result(timeout=100))
         finally:
@@ -145,6 +150,27 @@ def compose(loop, db, runtime_resolver=None):
         async def ext_method(self, method, params):
             if method == 'sarah/policy' and params == {}:
                 return {'policy': identity(), 'schemas': SCHEMAS}
+            if method == 'sarah/turn' and isinstance(params, dict) and set(params) == {'sessionId','nonce','dialogue'}:
+                state = self.session_manager.get_session(params['sessionId'])
+                nonce, dialogue = params['nonce'], params['dialogue']
+                if (state is None or state.is_running or not isinstance(nonce,str) or len(nonce)!=64
+                        or any(c not in '0123456789abcdef' for c in nonce)
+                        or not isinstance(dialogue,list) or len(dialogue)>4000):
+                    raise ValueError('acp_turn_binding_denied')
+                for i,m in enumerate(dialogue):
+                    if (not isinstance(m,dict) or set(m)!={'role','content'}
+                            or m['role'] != ('user' if i%2==0 else 'assistant')
+                            or not isinstance(m['content'],str)):
+                        raise ValueError('acp_local_history_denied')
+                if len(dialogue)%2 or sum(len(m['content']) for m in dialogue)>128000:
+                    raise ValueError('acp_local_history_denied')
+                if dialogue:
+                    head = state.agent.session_id
+                    for message in dialogue:
+                        db.append_message(session_id=head, role=message['role'], content=message['content'])
+                    state.history = db.get_messages_as_conversation(head)
+                state.agent._sarah_nonce = nonce
+                return {}
             raise ValueError('acp_extension_denied')
 
         async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):

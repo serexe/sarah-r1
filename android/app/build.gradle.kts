@@ -1,6 +1,17 @@
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
+
+// Private, one-candidate approval scope. Missing inputs disable recovery, never broaden it.
+val recoveryApproval = Properties().apply {
+ val source = rootProject.file(".local-review/exact-local-recovery.properties")
+ if (source.isFile) source.inputStream().use { load(it) }
+}
+fun recoveryHash(name: String): String = (recoveryApproval.getProperty(name) ?: "").also {
+ require(it.isEmpty() || it.matches(Regex("[0-9a-f]{12}"))) { "Invalid local recovery approval" }
+}
+
 android {
  namespace = "com.serexe.sarah"
  compileSdk = 35
@@ -13,11 +24,16 @@ android {
    keyPassword = storePassword
   }
  }
- defaultConfig { applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 37; versionName = "0.1.37-response-speed-review"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a", "x86_64") } }
+ defaultConfig {
+  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 44; versionName = "0.1.44-golden"
+  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a") }
+  buildConfigField("String", "RECOVERY_REQUEST_HASH", "\"${recoveryHash("requestHash")}\"")
+  buildConfigField("String", "RECOVERY_CONVERSATION_HASH", "\"${recoveryHash("conversationHash")}\"")
+ }
  buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("localReview") }; release { isMinifyEnabled = false } }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }
- buildFeatures { compose = true }
+ buildFeatures { compose = true; buildConfig = true }
  packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
  testOptions { unitTests.isReturnDefaultValues = true }
 }

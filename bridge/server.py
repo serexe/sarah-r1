@@ -16,7 +16,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
     adapter = adapter or BlockedHermes()
     # Durations only; no transcript, audio, identity or upstream error logging.
     store.db.execute('CREATE TABLE IF NOT EXISTS response_metrics(turn TEXT PRIMARY KEY, route TEXT NOT NULL, timings TEXT NOT NULL)')
-    buckets=defaultdict(deque); tasks={}; confirmations={}; dispatching=set()
+    buckets=defaultdict(deque); tasks={}; confirmations={}; dispatching=set(); streams={}
     media=store.path.parent/'media'; media.mkdir(mode=0o700, exist_ok=True);media.chmod(0o700)
     @web.middleware
     async def guard(request,handler):
@@ -66,8 +66,14 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
     def released(device,turn,clip,task):
         # Also runs if Stop wins before execute's first instruction.
         clip.unlink(missing_ok=True);tasks.pop(turn,None);confirmations.pop(turn,None)
-        if store.get(device,turn)['state']!='done':(media/(turn+'.mp3')).unlink(missing_ok=True)
-    async def execute(device,turn,clip,admitted,upload_ms):
+        if turn in streams:
+            streams.pop(turn,None)
+            for seq in range(32):(media/(turn+'.'+str(seq)+'.mp3')).unlink(missing_ok=True)
+        if store.get(device,turn)['state']!='done':
+            (media/(turn+'.mp3')).unlink(missing_ok=True)
+            for seq in range(32):(media/(turn+'.'+str(seq)+'.mp3')).unlink(missing_ok=True)
+            streams.pop(turn,None)
+    async def execute(device,turn,clip,admitted,upload_ms,chunked=False):
         transcript=''
         started=time.monotonic();timings={'upload_read_ms':upload_ms,'queue_ms':(started-admitted)*1000};route='model'
         try:
@@ -149,10 +155,30 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
             if errors:text+='\n'+' '.join(errors)
             store.finish(device,turn,'speaking','Preparing spoken reply',transcript)
             tts_started=time.monotonic()
-            try:await asyncio.wait_for(adapter.speak(text,media/(turn+'.mp3')),timeout=45)
-            except Exception:
-                (media/(turn+'.mp3')).unlink(missing_ok=True)
-                # Text remains usable when optional free TTS unavailable.
+            if chunked:
+                from .warm_voice import sentence_chunks
+                stream=streams[turn]={'count':0,'after':0,'complete':False}
+                store.finish(device,turn,'speaking',text,transcript)
+                total=0
+                async with asyncio.timeout(240):
+                    for seq,chunk in enumerate(sentence_chunks(text)):
+                        # Two produced-but-unplayed chunks maximum; retain admission.
+                        while stream['count']-stream['after'] >= 2:
+                            await asyncio.sleep(.05)
+                        target=media/(turn+'.'+str(seq)+'.mp3')
+                        await adapter.speak(chunk,target)
+                        total += target.stat().st_size
+                        if total > 4*1024*1024:raise RuntimeError('chunk_audio_limit')
+                        stream['count'] += 1
+                        if seq==0:timings['first_mp3_ms']=(time.monotonic()-tts_started)*1000
+                    stream['complete']=True
+                    while stream['after'] < stream['count']:
+                        await asyncio.sleep(.05)
+            else:
+                try:await asyncio.wait_for(adapter.speak(text,media/(turn+'.mp3')),timeout=45)
+                except Exception:
+                    (media/(turn+'.mp3')).unlink(missing_ok=True)
+                    # Text remains usable when optional free TTS unavailable.
             timings['tts_ms']=(time.monotonic()-tts_started)*1000
             if active(device,turn):store.finish(device,turn,'done',text,transcript)
         except Exception as e:
@@ -185,13 +211,21 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         turn=store.admit(device,conversation,key,fingerprint)
         if not existing:
             clip=media/(turn+'.wav');clip.touch(mode=0o600,exist_ok=False);clip.write_bytes(data)
-            task=asyncio.create_task(execute(device,turn,clip,time.monotonic(),upload_ms))
+            task=asyncio.create_task(execute(device,turn,clip,time.monotonic(),upload_ms,request.headers.get('X-Audio-Chunks')=='sentence-mp3-v1'))
             tasks[turn]=task
             task.add_done_callback(lambda done, d=device, t=turn, c=clip: released(d,t,c,done))
         return web.json_response({'turn':turn},status=202)
     async def poll(request):
         turn=request.match_info['turn'];result=store.get(request['device'],turn)
         result['audio']=result['state']=='done' and (media/(turn+'.mp3')).is_file()
+        stream=streams.get(turn)
+        if stream is not None and result['state'] in ('speaking','done'):
+            after=request.headers.get('X-Audio-After')
+            if after is not None:
+                if len(after)>2 or not after.isdecimal() or not stream['after'] <= int(after) <= stream['count']:
+                    raise Denied('audio_sequence_denied')
+                stream['after']=int(after)
+            result['audio_chunks']={'count':stream['count'],'complete':stream['complete']}
         metric=store.db.execute('SELECT route,timings FROM response_metrics WHERE turn=?',(turn,)).fetchone()
         if metric:result['timings']={**json.loads(metric['timings']),'route':metric['route']}
         if turn in confirmations: result['confirmation']=confirmations[turn][2]
@@ -216,6 +250,14 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         path=media/(turn+'.mp3')
         if row['state']!='done' or not path.is_file():raise Denied('not_found')
         return web.Response(body=path.read_bytes(),content_type='audio/mpeg')
+    async def chunk_audio(request):
+        turn=request.match_info['turn'];row=store.get(request['device'],turn)
+        seq=request.match_info['seq'];stream=streams.get(turn)
+        if not seq.isdecimal() or len(seq)>2 or stream is None or not 0<=int(seq)<stream['count'] or row['state'] not in ('speaking','done'):
+            raise Denied('not_found')
+        path=media/(turn+'.'+str(int(seq))+'.mp3')
+        if not path.is_file():raise Denied('not_found')
+        return web.Response(body=path.read_bytes(),content_type='audio/mpeg')
     async def cancel(request):
         await body(request,[])
         # Discard output; no retry/undo. Wake unconfirmed actions without dispatch.
@@ -230,12 +272,19 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         for task in pending:
             if not task.cancelling(): task.cancel()
         await asyncio.gather(*pending,return_exceptions=True)
+        if getattr(adapter, 'backend', None) == 'acp':
+            await adapter.close()
+        if hasattr(adapter, '_warm_voice'):
+            await adapter._warm_voice.close()
     app.on_cleanup.append(cleanup)
+    from .diagnostics import install as install_diagnostics
+    install_diagnostics(app,store.path.parent)
     app.router.add_get('/v1/health',health);app.router.add_post('/v1/conversations',conversation)
     app.router.add_get('/v1/requests/{request}',lookup)
     app.router.add_post('/v1/turns',submit);app.router.add_get('/v1/turns/{turn}',poll)
     app.router.add_get('/v1/turns/{turn}/audio',audio);app.router.add_post('/v1/turns/{turn}/cancel',cancel)
     app.router.add_post('/v1/turns/{turn}/confirmation',confirmation)
+    app.router.add_get('/v1/turns/{turn}/audio/{seq}',chunk_audio)
     return app
 
 def main():
