@@ -14,7 +14,7 @@ The composition pins `openai-codex`, its Codex endpoint and `gpt-6.1-sol`, with 
 
 ## Permissions and persistence
 
-The exact existing 18 tool schemas are preserved: `calendar_create`, `calendar_delete`, `calendar_list`, `calendar_read`, `calendar_update`, `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services`, `sy_append`, `sy_create`, `sy_delete`, `sy_edit`, `sy_list_notebooks`, `sy_read`, `sy_search`, `sy_update`, `tvtime_on`.
+The exact existing 18 tool schemas are preserved: `calendar_create`, `calendar_delete`, `calendar_list`, `calendar_read`, `calendar_update`, `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services`, `sy_append`, `sy_create`, `sy_delete`, `sy_edit`, `sy_list_notebooks`, `sy_read`, `sy_search`, `sy_update`, `tvtime_on`. Four scoped schemas follow: `web_search`, `mailbox_search`, `mailbox_read`, `mailbox_draft`. Actual research dispatch requires explicit `--enable-research` with ACP and server-only configuration; schemas alone grant no access. See [web search and read-only mail](WEB_MAIL.md).
 
 Schemas are not live authorization: existing public integration enable flags and server dispatchers still control actual access. Credentials alone do not opt in. No generic shell, filesystem, browser, administrative tools, client execution, MCP servers, blanket permission bypass or additional default tools are granted. Tool extension requires deliberate source/schema/dispatcher authorization, not merely enabling an inherited Hermes toolset. Permission requests are denied. Public calendar timezone is the one explicit nonsecret configuration forwarded to the child, preserving schema agreement.
 

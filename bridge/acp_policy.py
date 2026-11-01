@@ -6,8 +6,9 @@ from .ha import TOOLS as HA, LIGHT_GUIDANCE
 from .siyuan import TOOLS as SY, GUIDANCE as SY_GUIDANCE
 from .calendar import TOOLS as CAL, GUIDANCE as CAL_GUIDANCE
 from .tvtime import TOOLS as TV, GUIDANCE as TV_GUIDANCE
+from .web_mail import TOOLS as RESEARCH, GUIDANCE as RESEARCH_GUIDANCE, NAMES as RESEARCH_NAMES, arguments as research_arguments
 
-TOOLS = HA + SY + CAL + TV
+TOOLS = HA + SY + CAL + TV + RESEARCH
 NAMES = frozenset(t['name'] for t in TOOLS)
 def normalized(value):
     if isinstance(value, list): return [normalized(v) for v in value]
@@ -21,12 +22,12 @@ SCHEMAS = [{'type': 'function', 'function': {k: t[k] for k in ('name', 'descript
 GUIDANCE = ('You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. Reply briefly. '
             'Only supplied bridge tools exist. Never claim action success from agent completion; '
             'only actual server receipts establish outcomes. Never retry uncertain writes. '
-            + LIGHT_GUIDANCE + ' ' + SY_GUIDANCE + ' ' + CAL_GUIDANCE + ' ' + TV_GUIDANCE)
+            + LIGHT_GUIDANCE + ' ' + SY_GUIDANCE + ' ' + CAL_GUIDANCE + ' ' + TV_GUIDANCE + ' ' + RESEARCH_GUIDANCE)
 
 def identity():
     root = Path(__file__).parent
     files = ['acp_policy.py', 'acp_launcher.py', 'acp_client.py', 'acp_runtime.py',
-             'ha.py', 'siyuan.py', 'calendar.py', 'tvtime.py', 'sarah-acp.yaml',
+             'ha.py', 'siyuan.py', 'calendar.py', 'tvtime.py', 'web_mail.py', 'sarah-acp.yaml',
              'server.py', 'core.py']
     payload = {'version': 1, 'schemas': SCHEMAS,
                'files': {f: hashlib.sha256((root/f).read_bytes()).hexdigest() for f in files}}
@@ -38,4 +39,6 @@ def validate(name, args):
     schema = next(t['parameters'] for t in TOOLS if t['name'] == name)
     if set(args) - set(schema['properties']) or set(schema['required']) - set(args):
         raise ValueError('acp_scoped_arguments_denied')
+    if name in RESEARCH_NAMES:
+        research_arguments(name, args)
     return args

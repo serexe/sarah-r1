@@ -10,9 +10,10 @@ from pathlib import Path
 from aiohttp import web
 from .core import BlockedHermes, Conflict, Denied, Store, validate_audio, canonical
 from .direct_clock import direct_clock
+from .web_mail import ResearchTurn, NAMES as RESEARCH_NAMES
 
 
-def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None):
+def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=None, research=None):
     adapter = adapter or BlockedHermes()
     # Durations only; no transcript, audio, identity or upstream error logging.
     store.db.execute('CREATE TABLE IF NOT EXISTS response_metrics(turn TEXT PRIMARY KEY, route TEXT NOT NULL, timings TEXT NOT NULL)')
@@ -45,7 +46,8 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         if calendar is not None: reason+=' Calendar enabled for explicitly configured scope; list/read/create/update/exact delete with readback. Configuration is not live scope verification.'
         if tvtime is not None: reason+=' TV time ON uses existing canonical workflow once; webhook accepted is not device readiness proof.'
         if getattr(adapter,'backend',None)=='acp': reason=adapter.reason+' Existing HA/SiYuan/calendar/TV grants preserved; server-owned mutation receipts, not model completion, establish action outcomes.'
-        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'tools':bool(adapter.ready) and any(b is not None for b in (ha,siyuan,calendar,tvtime)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None})
+        if research is not None: reason+=' Tavily default web search; Exa only on explicit current-user request, no fallback. Exact Hermes mailbox search/read and conversation-only drafts; no mail mutation. Research turns cannot dispatch unrelated tools; later user-authorized turns keep existing integrations.'
+        return web.json_response({'connected':True,'ready':bool(adapter.ready),'reason':reason,'protocol':1,'tools':bool(adapter.ready) and any(b is not None for b in (ha,siyuan,calendar,tvtime,research)),'home_assistant':ha is not None,'siyuan':siyuan is not None,'calendar':calendar is not None,'tvtime':tvtime is not None,'web_search':research is not None and bool(research.tavily_key),'exa_explicit_only':research is not None and bool(research.exa_key),'mailbox':research is not None and bool(research.key),'mailbox_draft':research is not None})
     async def conversation(request):
         await body(request,[])
         return web.json_response({'conversation':store.conversation(request['device'])},status=201)
@@ -104,8 +106,17 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                     return False
                 finally: confirmations.pop(turn,None)
             outcomes=[]; read_results=[]
+            previous=store.db.execute("SELECT transcript FROM turns WHERE device=? AND conversation=? AND state='done'",(device,conversation)).fetchall() if research is not None else []
+            research_history=any((lambda t:t.web_intent or t.mail_intent)(ResearchTurn(row['transcript'])) for row in previous)
+            research_turn=ResearchTurn(transcript,research_history=research_history)
             async def dispatch(name,args):
                 if not active(device,turn): return {'reply':'Request cancelled. Nothing further dispatched.'}
+                if research is not None:
+                    try: research_turn.admit(name,args)
+                    except Denied as error:
+                        outcome={'error':str(error),'reply':'Tool denied ('+str(error)+'). Nothing dispatched. Use a separate explicit user turn for unrelated tools; web queries must come from current user text.'}
+                        read_results.append(outcome)
+                        return outcome
                 async def claim(action):
                     if not active(device,turn): return False
                     # New note/calendar mutations consume one durable turn slot,
@@ -114,14 +125,15 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                     claimed=store.claim_dispatch(device,turn,conversation,action)
                     if claimed: dispatching.add(turn)
                     return claimed
-                backend=tvtime if name == 'tvtime_on' else siyuan if name.startswith('sy_') else calendar if name.startswith('calendar_') else ha
+                backend=research if name in RESEARCH_NAMES else tvtime if name == 'tvtime_on' else siyuan if name.startswith('sy_') else calendar if name.startswith('calendar_') else ha
                 try:
                     outcome=await backend.dispatch(name,args,claim) if backend is not None else {'reply':'Requested tool unavailable. Nothing dispatched.'}
                 finally:
                     dispatching.discard(turn)
                 # Snapshot actual dispatcher output before giving it to runtime.
                 # Model text/JSON and runtime return values cannot add outcomes.
-                if name in ('ha_list_entities','ha_get_state','ha_list_services','sy_list_notebooks','sy_search','sy_read','calendar_list','calendar_read'):
+                if (name in RESEARCH_NAMES and name != 'mailbox_draft') or name in ('ha_list_entities','ha_get_state','ha_list_services','sy_list_notebooks','sy_search','sy_read','calendar_list','calendar_read'):
+                    if research is not None and name in RESEARCH_NAMES: research_turn.observe(name,outcome)
                     read_results.append(outcome)
                 else:
                     outcomes.append(dict(outcome))
@@ -136,9 +148,9 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
                 store.db.execute('INSERT OR REPLACE INTO response_metrics VALUES(?,?,?)',(turn,route,'{}'))
             elif hasattr(adapter, 'reply_turn'):
                 text=await adapter.reply_turn(transcript,history,device=device,conversation=conversation,
-                                              dispatch=dispatch if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else None)
+                                              dispatch=dispatch if any(b is not None for b in (ha,siyuan,calendar,tvtime,research)) else None)
             else:
-                text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime)) else await adapter.reply(transcript,history)
+                text=await adapter.reply(transcript,history,dispatch=dispatch) if any(b is not None for b in (ha,siyuan,calendar,tvtime,research)) else await adapter.reply(transcript,history)
             timings['reply_ms']=(time.monotonic()-reply_started)*1000
             timings['model_ms']=timings['reply_ms'] if route=='model' else 0.0
             if not active(device,turn):return
@@ -294,6 +306,7 @@ def main():
     p.add_argument('--bind',default='127.0.0.1');p.add_argument('--port',type=int,default=8787)
     p.add_argument('--backend',choices=('codex','acp'),default='codex',
                    help='Manual backend selection; ACP requires reviewed dedicated Sarah profile')
+    p.add_argument('--enable-research',action='store_true',help='Scoped Tavily/explicit Exa, Gmail GET/search and conversation-only drafts')
     args=p.parse_args();store=Store(args.db);store.recover()
     from .acp_runtime import create_runtime
     adapter=create_runtime(store,args.hermes_source,args.backend)
@@ -303,6 +316,9 @@ def main():
     from .siyuan import SiYuanDispatcher
     from .calendar import CalendarDispatcher
     from .tvtime import TVTimeDispatcher
-    web.run_app(make_app(store,adapter,HADispatcher.from_env(),SiYuanDispatcher.from_env(),CalendarDispatcher.from_env(),TVTimeDispatcher.from_env()),host=args.bind,port=args.port,ssl_context=tls,access_log=None)
+    from .web_mail import ResearchDispatcher
+    if args.enable_research and args.backend!='acp': raise ValueError('research_requires_scoped_acp')
+    research=ResearchDispatcher.from_env() if args.enable_research else None
+    web.run_app(make_app(store,adapter,HADispatcher.from_env(),SiYuanDispatcher.from_env(),CalendarDispatcher.from_env(),TVTimeDispatcher.from_env(),research),host=args.bind,port=args.port,ssl_context=tls,access_log=None)
 
 if __name__=='__main__':main()

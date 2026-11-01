@@ -36,6 +36,7 @@ bridge/sarah-acp.yaml
 bridge/server.py
 bridge/siyuan.py
 bridge/tvtime.py
+bridge/web_mail.py
 clickable.yaml
 config/bridge.env.example
 docs/ACP.md
@@ -43,6 +44,7 @@ docs/ARCHITECTURE.md
 docs/CONFIGURATION.md
 docs/SETUP.md
 docs/VERIFICATION.md
+docs/WEB_MAIL.md
 manifest.json
 power/README.md
 power/idle_power.py
@@ -88,4 +90,5 @@ tests/test_security.py
 tests/test_siyuan.py
 tests/test_speech_format.py
 tests/test_tvtime.py
+tests/test_web_mail.py
 tools/privacy_scan.py
