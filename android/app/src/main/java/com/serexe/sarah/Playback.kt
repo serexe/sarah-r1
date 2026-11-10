@@ -14,6 +14,8 @@ import android.os.Looper
 class Playback(private val context:Context,private val onDone:(Boolean)->Unit):AudioPlayback {
  @Volatile private var metered:ReplyResource?=null
  internal fun amplitude():Float=metered?.amplitude() ?: 0f
+ /** Actual MediaPlayer position, never a synthetic speech clock. */
+ internal fun positionMs():Int=metered?.positionMs() ?: 0
  internal fun clearMeter() {metered?.clearMeter()}
  private val manager=context.getSystemService(AudioManager::class.java)
  private val main=Handler(Looper.getMainLooper())
@@ -46,6 +48,11 @@ class Playback(private val context:Context,private val onDone:(Boolean)->Unit):A
    if(!runCatching {p.isPlaying}.getOrDefault(false)) return 0f
    val e=envelope ?: ReplyEnvelope(bytes).also {envelope=it;it.request()}
    return e.at(runCatching {p.currentPosition}.getOrDefault(0))
+  }
+  @Synchronized fun positionMs():Int {
+   if(closed) return 0
+   val p=player ?: return 0
+   return if(runCatching {p.isPlaying}.getOrDefault(false)) runCatching {p.currentPosition}.getOrDefault(0).coerceAtLeast(0) else 0
   }
   private var source:MediaDataSource?=null
   private var focus:AudioFocusRequest?=null

@@ -12,6 +12,12 @@ internal class ListenerGate {
   if(!safe) stop()
   return active && !wake
  }
+ /** Serialize the ready cue with Stop; a late worker cannot restore listening. */
+ @Synchronized fun publishReady(modelArmed:Boolean,recorderRecording:Boolean,eligible:()->Boolean,emit:()->Unit):Boolean {
+  if(!active || wake || !modelArmed || !recorderRecording || !eligible()) return false
+  emit()
+  return true
+ }
  @Synchronized fun hit():Boolean {
   if(!active || wake) return false
   wake=true;return true

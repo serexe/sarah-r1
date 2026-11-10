@@ -8,6 +8,13 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
 
+/** Android 8 foreground mic consent has no ROLE_ASSISTANT API; Android 10+ keeps role gate. */
+internal object AssistantWakePolicy {
+ fun roleSatisfied(sdk:Int,held:Boolean):Boolean = sdk<29 || held
+ fun roleSatisfied(context:Context):Boolean = roleSatisfied(Build.VERSION.SDK_INT,
+  Build.VERSION.SDK_INT>=29 && roleManager(context)?.isRoleHeld(RoleManager.ROLE_ASSISTANT)==true)
+}
+
 /** Public API policy, rechecked at acquisition, each PCM chunk, and finalization. */
 internal object AudioEligibility {
  fun allowed(context:Context, wake:Boolean=false):Boolean = try {
@@ -15,7 +22,7 @@ internal object AudioEligibility {
   context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED &&
    context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked==false &&
    audio.mode==AudioManager.MODE_NORMAL && !audio.isMicrophoneMute &&
-   (!wake || (Build.VERSION.SDK_INT>=29 && roleManager(context)?.isRoleHeld(RoleManager.ROLE_ASSISTANT)==true))
+   (!wake || AssistantWakePolicy.roleSatisfied(context))
  } catch (_:Exception) {false}
 }
 

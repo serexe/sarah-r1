@@ -26,7 +26,7 @@ internal class HeySarahKeywordEngine(assets: AssetManager) : AutoCloseable {
             provider = "cpu", numThreads = 1
         ),
         keywordsFile = "kws/keywords.txt",
-        keywordsScore = 1.5f, keywordsThreshold = 0.25f, numTrailingBlanks = 2
+        keywordsScore = 1.5f, keywordsThreshold = BuildConfig.WAKE_KEYWORD_THRESHOLD, numTrailingBlanks = 2
     ))
     private var stream = try { spotter.createStream() } catch (e: Throwable) {
         spotter.release(); throw e
@@ -57,7 +57,7 @@ internal class HeySarahKeywordEngine(assets: AssetManager) : AutoCloseable {
         stream.acceptWaveform(FloatArray(count) { samples[it] / 32768.0f }, SAMPLE_RATE)
         while (spotter.isReady(stream)) {
             spotter.decode(stream)
-            if (spotter.getResult(stream).keyword == "HEY_SARAH") {
+            if (WakePhrase.matchesResult(spotter.getResult(stream).keyword)) {
                 armed = false
                 spotter.reset(stream)
                 return true

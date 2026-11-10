@@ -83,12 +83,17 @@ class Bridge(private val origin:String,private val token:String,ca:ByteArray?=nu
  override fun health():JSONObject=json("/v1/health")
  override fun create():String=json("/v1/conversations","POST",empty()).getString("conversation").also { require(Identity.valid(it)) }
  override fun submit(conversation:String,request:String,wav:ByteArray):String {
-  require(Identity.valid(conversation) && Identity.valid(request))
-  return json("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1")).getString("turn").also { require(Identity.valid(it)) }
+  return submitWithParent(conversation,request,wav,null)
  }
- suspend fun submitCancellable(conversation:String,request:String,wav:ByteArray):String {
+ override fun submitClarification(conversation:String,request:String,wav:ByteArray,parent:String):String=submitWithParent(conversation,request,wav,parent)
+ private fun submitWithParent(conversation:String,request:String,wav:ByteArray,parent:String?):String {
   require(Identity.valid(conversation) && Identity.valid(request))
-  return jsonCancellable("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1")).getString("turn").also {require(Identity.valid(it))}
+  require(parent==null || Identity.valid(parent))
+  return json("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1") + (parent?.let {mapOf("X-Clarification-Parent" to it)} ?: emptyMap())).getString("turn").also { require(Identity.valid(it)) }
+ }
+ suspend fun submitCancellable(conversation:String,request:String,wav:ByteArray,parent:String?=null):String {
+  require(Identity.valid(conversation) && Identity.valid(request) && (parent==null || Identity.valid(parent)))
+  return jsonCancellable("/v1/turns","POST",wav.toRequestBody("audio/wav".toMediaType()),mapOf("X-Conversation" to conversation,"Idempotency-Key" to request,"X-Audio-Chunks" to "sentence-mp3-v1") + (parent?.let {mapOf("X-Clarification-Parent" to it)} ?: emptyMap())).getString("turn").also {require(Identity.valid(it))}
  }
  suspend fun pollCancellable(turn:String,after:Int=0):JSONObject {require(Identity.valid(turn) && after in 0..32);return jsonCancellable("/v1/turns/$turn",headers=mapOf("X-Audio-After" to after.toString()))}
  suspend fun audioCancellable(turn:String,seq:Int?=null):ByteArray = suspendCancellableCoroutine { continuation ->

@@ -73,6 +73,7 @@ class ACPClient:
         self.answer_chars = 0
         self.dispatch = None
         self.turn_nonce = None
+        self.dispatch_count = 0
 
     @classmethod
     async def connect(cls, config):
@@ -147,6 +148,7 @@ class ACPClient:
                         or p['sessionId'] != self.session_id or p['policy'] != identity()):
                     raise ACPError('acp_dispatch_binding_denied')
                 validate(p['name'], p['arguments'])
+                self.dispatch_count += 1
                 outcome = await self.dispatch(p['name'], p['arguments'])
                 await self.send({'id': message['id'], 'result': outcome})
             elif message['method'] == 'session/request_permission':
@@ -188,6 +190,7 @@ class ACPClient:
         self.session_id = session_id
         self.parts = []
         self.answer_chars = 0
+        self.dispatch_count = 0
         self.collecting = True
         try:
             result = await self.request('session/prompt', {

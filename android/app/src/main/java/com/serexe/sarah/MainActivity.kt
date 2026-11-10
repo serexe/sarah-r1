@@ -101,7 +101,7 @@ class MainActivity:ComponentActivity() {
  override fun onNewIntent(intent:Intent) {super.onNewIntent(intent);setIntent(intent);if(locked()) {finish();return};assistantOpened=isAssistantInvocation(intent)}
  override fun onResume() {super.onResume();if(locked()) {finish();return};refreshRole();HeySarahListenerService.visible=true
   HeySarahListenerService.onWake={
-   if(locked() || !getSystemService(android.os.PowerManager::class.java).isInteractive || !HeySarahListenerService.visible) false else vm.acceptWake().also {accepted->
+   if(locked() || !getSystemService(android.os.PowerManager::class.java).isInteractive || !HeySarahListenerService.visible) false else vm.acceptWake(HeySarahListenerService.visibleHandoff()).also {accepted->
     if(accepted) runCatching {getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(60,VibrationEffect.DEFAULT_AMPLITUDE))}
    }
   }
@@ -158,7 +158,7 @@ class MainActivity:ComponentActivity() {
     if(!PhoneMedia.hasLibraryPermission(context)) OutlinedButton(onClick={musicPermission.launch(if(Build.VERSION.SDK_INT>=33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE)}) {Text("Allow phone music library")}
     else Text("Phone music library access granted",style=MaterialTheme.typography.bodySmall)
     AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole)
-    ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
+    ListenerControls(listener,ui,ui.canCapture && AssistantWakePolicy.roleSatisfied(context),listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
     if(!ui.hasConfig) Column {
      Text("Enter HTTPS bridge origin and separate revocable Android device token. No provider or smart-home credentials.",color=fg)
      Spacer(Modifier.height(18.dp))
@@ -187,11 +187,11 @@ class MainActivity:ComponentActivity() {
     {mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,
     {context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}")))})
 
-   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local Hey Sarah?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
+   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local ${WakePhrase.display}?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. If bridge explicitly asks for a clarification, microphone may reopen after speech for one 9-second answer window in same conversation; silence returns to wake listening. No confirmation or action approval by spoken answer. Without persistent opt-in, tap microphone manually to answer. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
     listenerConsent=false
     val required=if(Build.VERSION.SDK_INT>=33) arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS) else arrayOf(Manifest.permission.RECORD_AUDIO)
     when(ListenerPermissionFlow.confirmed(required.all {context.checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED})) {
-     ListenerPermissionFlow.Action.START -> {listenerPermissionReady=false;HeySarahListenerService.start(context,vm.ui.value.canCapture && roleHeld)}
+     ListenerPermissionFlow.Action.START -> {listenerPermissionReady=false;HeySarahListenerService.start(context,vm.ui.value.canCapture && AssistantWakePolicy.roleSatisfied(context))}
      ListenerPermissionFlow.Action.REQUEST_PERMISSION -> {listenerPermissionReady=false;listenerPermission.launch(required)}
      else -> Unit
     }
@@ -241,6 +241,10 @@ class MainActivity:ComponentActivity() {
   "uncertain" -> "Outcome uncertain"
   else -> "Connecting"
  }
+ if(BuildConfig.FLAVOR=="lenovo") {
+  LenovoResponseScreen(ui,listener,vm,state,expanded,{expanded=!expanded},onSettings,onListener,onStopListener,onMic,denied,onPermissions,
+   counting,ringing,localTimers.second,scheduleReadError,alertError,{alertError=it},scope,context)
+ } else {
  Column(Modifier.fillMaxSize()) {
   Row(Modifier.fillMaxWidth().padding(start=24.dp,end=12.dp,top=12.dp),verticalAlignment=Alignment.CenterVertically) {
    Column(Modifier.weight(1f)) {
@@ -301,11 +305,12 @@ class MainActivity:ComponentActivity() {
     }
     HorizontalDivider(color=Color(0xff393143))
     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-     TextButton(onClick=if(listener=="off") onListener else onSettings,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("“Hey Sarah”",modifier=Modifier.weight(1f),textAlign=TextAlign.Start);Text(if(listener=="off") "Off  ›" else "$listener  ›")}
+     TextButton(onClick=if(listener=="off") onListener else onSettings,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("“${WakePhrase.display}”",modifier=Modifier.weight(1f),textAlign=TextAlign.Start);Text(if(listener=="off") "Off  ›" else "$listener  ›")}
      if(listener!="off") TextButton(onClick=onStopListener,modifier=Modifier.heightIn(min=48.dp)) {Text("Stop microphone")}
     }
    }
   }
+ }
  }
  if(expanded) Dialog(onDismissRequest={expanded=false}) {
   Surface(shape=RoundedCornerShape(24.dp),modifier=Modifier.fillMaxWidth().fillMaxHeight(.8f)) {
@@ -326,13 +331,93 @@ class MainActivity:ComponentActivity() {
   }
  }
 }
+/** Lenovo-only A2: the phone retains its previous screen and controls. */
+@Composable private fun LenovoResponseScreen(
+ ui:SarahViewModel.Ui,listener:String,vm:SarahViewModel,state:String,expanded:Boolean,onHistory:()->Unit,
+ onSettings:()->Unit,onListener:()->Unit,onStopListener:()->Unit,onMic:()->Unit,
+ denied:Boolean,onPermissions:()->Unit,counting:List<ScheduleEntry>,ringing:List<ScheduleEntry>,
+ now:Long,scheduleReadError:Boolean,alertError:Boolean,onAlertError:(Boolean)->Unit,
+ scope:kotlinx.coroutines.CoroutineScope,context:Context
+) {
+ val lavender=MaterialTheme.colorScheme.primary
+ val caption=ui.responseText
+ // Server returns the whole answer before chunk playback, not a text stream.
+ // Reveal advances only while the real MediaPlayer position advances. This is
+ // deliberately approximate pacing, NOT word/audio alignment.
+ var playedMs by remember(caption) {mutableLongStateOf(0L)}
+ LaunchedEffect(ui.phase,caption) {
+  if(ui.phase=="playing" && !caption.isNullOrBlank()) {
+   var previous=0
+   while(true) {
+    val position=vm.playbackPositionMs()
+    if(position>previous) playedMs+=(position-previous).toLong()
+    previous=position
+    delay(80)
+   }
+  }
+ }
+ val visibleAnswer=when {
+  caption.isNullOrBlank()->null
+  ui.phase in setOf("playing","polling")->caption.take((playedMs*18L/1000L).coerceIn(0L,caption.length.toLong()).toInt())
+  else->caption
+ }
+ Column(Modifier.fillMaxSize()) {
+  Row(Modifier.fillMaxWidth().padding(start=24.dp,end=12.dp,top=8.dp),verticalAlignment=Alignment.CenterVertically) {
+   Text("SARAH",style=MaterialTheme.typography.titleMedium,letterSpacing=2.sp,modifier=Modifier.weight(1f))
+   TextButton(onClick=onSettings,modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp).semantics {contentDescription="Connection and settings"}) {Text("⚙",fontSize=24.sp)}
+  }
+  if(scheduleReadError) Text("Local timers unavailable. Existing timer state not confirmed.",modifier=Modifier.padding(horizontal=20.dp),style=MaterialTheme.typography.bodySmall)
+  if(counting.isNotEmpty() || ringing.isNotEmpty()) Column(Modifier.fillMaxWidth().heightIn(max=142.dp).verticalScroll(rememberScrollState()).padding(horizontal=20.dp)) {
+   counting.forEach {entry-> Row(verticalAlignment=Alignment.CenterVertically) {
+    Text("${entry.title} · ${TimerCountdown.remaining(entry.dueMillis,now)}",modifier=Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis)
+    TextButton(onClick={scope.launch {onAlertError(withContext(Dispatchers.IO) {runCatching {localSchedule(context).cancel(entry.id,kind="timer")}.getOrDefault(false).not()})}},modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp)) {Text("Cancel")}
+   }}
+   ringing.forEach {entry->Button(onClick={scope.launch {onAlertError(withContext(Dispatchers.IO) {runCatching {localSchedule(context).dismiss(entry.id)}.getOrDefault(false).not()})}},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("■ Stop ${entry.kind} · ${entry.title.take(40)}",maxLines=1)}}
+  }
+  if(alertError) Text("Local stop not confirmed. Check current timers; do not repeat uncertain writes.",modifier=Modifier.padding(horizontal=20.dp),style=MaterialTheme.typography.bodySmall)
+  Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal=22.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+   Text(state,color=lavender,style=MaterialTheme.typography.titleSmall,modifier=Modifier.padding(top=8.dp))
+   // The playback-driven waveform is unchanged; only its containing layout moves.
+   CompanionWaveform(ui.phase,vm,Modifier.weight(.52f).fillMaxWidth())
+   Column(Modifier.weight(.48f).fillMaxWidth().verticalScroll(rememberScrollState()),horizontalAlignment=Alignment.CenterHorizontally) {
+    if(caption!=null) {
+     Text("SARAH SAYS",color=lavender,style=MaterialTheme.typography.labelMedium)
+     Spacer(Modifier.height(12.dp))
+     Text(visibleAnswer.orEmpty(),style=MaterialTheme.typography.titleLarge,textAlign=TextAlign.Center,lineHeight=29.sp)
+    } else if(ui.phase !in setOf("ready","done")) Text(ui.status,style=MaterialTheme.typography.bodyMedium,textAlign=TextAlign.Center)
+    if(caption!=null && ui.phase in setOf("error","uncertain","cancelled")) Text(ui.status,style=MaterialTheme.typography.bodySmall,textAlign=TextAlign.Center)
+    if(denied) {Text("Microphone denied. Enable permission in Android settings.",style=MaterialTheme.typography.bodySmall);TextButton(onClick=onPermissions,modifier=Modifier.heightIn(min=48.dp)) {Text("Open app settings")}}
+    if(ui.phase=="recording") Text("Recording · adaptive pause. Discard with footer; Stop & send sends once.",style=MaterialTheme.typography.bodySmall,textAlign=TextAlign.Center)
+    if(ui.phase in setOf("uncertain","confirming","polling","finalizing","uploading","reply_audio_pending","cancelling","creating","disconnected") || ui.phase=="error" && !ui.canCapture) {
+     ActionPanel(ui,vm,onMic,denied,onPermissions)
+    }
+   }
+  }
+  Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.surface,modifier=Modifier.fillMaxWidth().padding(horizontal=8.dp,vertical=6.dp)) {
+   Row(Modifier.fillMaxWidth().padding(horizontal=8.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.weight(1f)) {
+     Text(if(ui.canCapture) "● Connected" else if(listener!="off" || ui.phase in setOf("recording","playing","polling")) "● Voice session" else "○ Connection",style=MaterialTheme.typography.labelSmall,maxLines=1,overflow=TextOverflow.Ellipsis)
+     Text(when {ui.phase=="recording"->"Recording now";listener=="off"->"Microphone off";ui.phase=="playing"->"Wake paused during reply";listener=="Wake listening"->"Wake ready · mic on";else->"Wake: $listener"},style=MaterialTheme.typography.labelSmall,color=Color(0xffa99fb8),maxLines=1,overflow=TextOverflow.Ellipsis)
+    }
+    OutlinedButton(onClick=when {listener!="off"->onStopListener;ui.phase=="recording"->vm::discard;else->onListener},modifier=Modifier.heightIn(min=48.dp).semantics {contentDescription=when {listener!="off"->"Stop microphone";ui.phase=="recording"->"Discard recording";else->"Enable persistent ${WakePhrase.display} microphone"}},contentPadding=PaddingValues(horizontal=7.dp)) {
+     Text(when {listener!="off"->"Stop mic";ui.phase=="recording"->"Discard";else->"Wake off"},style=MaterialTheme.typography.labelSmall,maxLines=1)
+    }
+    val canTalk=ui.hasConfig && ui.canCapture && listener=="off" && ui.phase in setOf("ready","done","error","cancelled")
+    Button(onClick=when(ui.phase) {"playing"->vm::stopAudio;"recording"->vm::send;else->onMic},enabled=ui.phase in setOf("playing","recording") || canTalk,modifier=Modifier.heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=10.dp)) {
+     Text(when(ui.phase) {"playing"->"■ Stop";"recording"->"■ Stop & send";"ready","done","error","cancelled"->"Tap to talk";else->"Working"},style=MaterialTheme.typography.labelMedium,maxLines=1)
+    }
+    TextButton(onClick=onHistory,modifier=Modifier.sizeIn(minWidth=48.dp,minHeight=48.dp).semantics {contentDescription=if(expanded) "Close history" else "History"},contentPadding=PaddingValues(0.dp)) {Text("History ›",style=MaterialTheme.typography.labelSmall,maxLines=1)}
+   }
+  }
+ }
+}
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
  Column {
-  Text("Hey Sarah: $state · microphone stays on until Stop. Locked wake notifies only. Black-screen behavior unverified.",style=MaterialTheme.typography.bodySmall)
+  Text("${WakePhrase.display}: $state · microphone stays on until Stop. Locked wake notifies only. Black-screen behavior unverified.",style=MaterialTheme.typography.bodySmall)
   if(state=="off") {
-   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent Hey Sarah")}
-   if(permissionReady) Text("Microphone permission granted. Tap Enable Hey Sarah again to start listening.",style=MaterialTheme.typography.bodySmall)
-  } else OutlinedButton(onClick=onStop) {Text("Stop Hey Sarah microphone")}
+   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent ${WakePhrase.display}")}
+   if(permissionReady) Text("Microphone permission granted. Tap Enable ${WakePhrase.display} again to start listening.",style=MaterialTheme.typography.bodySmall)
+  } else OutlinedButton(onClick=onStop) {Text("Stop ${WakePhrase.display} microphone")}
   if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop) {Text("Stop hands-free listening (current server work continues)")}
  }
 }
@@ -394,7 +479,7 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
  if(recoveryConfirm && ui.phase=="uncertain") AlertDialog(
   onDismissRequest={recoveryConfirm=false},
   title={Text("Clear only approved local tracking?")},
-  text={Text("Only the exact approved missing request can pass. Stop Hey Sarah first. A fresh authenticated status check must return not_found, with no admitted turn or active audio. Keeps history, conversation, pairing, permissions, action records and audio ACKs. Never resends the old request. Any mismatch or network/auth failure keeps tracking blocked.")},
+  text={Text("Only the exact approved missing request can pass. Stop ${WakePhrase.display} first. A fresh authenticated status check must return not_found, with no admitted turn or active audio. Keeps history, conversation, pairing, permissions, action records and audio ACKs. Never resends the old request. Any mismatch or network/auth failure keeps tracking blocked.")},
   confirmButton={TextButton(onClick={recoveryConfirm=false;vm.recoverApprovedLocalRequest()}) {Text("Check & clear approved tracking")}},
   dismissButton={TextButton(onClick={recoveryConfirm=false}) {Text("Keep tracking")}}
  )
@@ -424,7 +509,7 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
   } else if(ui.hasConfig && ui.canCapture && ui.phase in setOf("ready","done","error","cancelled")) {
    val listening by HeySarahListenerService.status.collectAsStateWithLifecycle()
    Button(onClick=onMic,enabled=listening=="off",modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("● Tap to talk",style=MaterialTheme.typography.titleMedium)}
-   if(listening!="off") Text("Stop Hey Sarah before manual command capture.")
+   if(listening!="off") Text("Stop ${WakePhrase.display} before manual command capture.")
    if(denied) {Text("Microphone denied. Enable permission in Android settings.");TextButton(onClick=onSettings) {Text("Open app settings")}}
   } else {
    Text("Authenticated connection required before recording",style=MaterialTheme.typography.bodySmall)

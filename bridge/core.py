@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import sqlite3
+import time
 import wave
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def validate_audio(data):
 class BlockedHermes:
     """Intentional closed seam. Not a simulated working Hermes integration.
 
-    Existing /v1/runs cannot prove Codex-only fallback suppression and a
+    Existing /v1/runs cannot prove reasoning fallback suppression and a
     companion-specific dispatch policy. There is NO enable/unsafe override.
     """
     ready=False
@@ -52,6 +53,14 @@ class Store:
         CREATE TABLE IF NOT EXISTS approvals(nonce TEXT PRIMARY KEY, device TEXT NOT NULL, turn TEXT NOT NULL, action TEXT NOT NULL, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS dispatches(device TEXT NOT NULL, turn TEXT NOT NULL, conversation TEXT NOT NULL, action TEXT NOT NULL, PRIMARY KEY(device,turn,action));
         ''')
+        # Existing turns remain closed; a single child can consume an explicit lease.
+        if not any(r['name']=='reply_expected' for r in self.db.execute('PRAGMA table_info(turns)')):
+            self.db.execute('ALTER TABLE turns ADD COLUMN reply_expected INTEGER NOT NULL DEFAULT 0')
+        if not any(r['name']=='clarification_parent' for r in self.db.execute('PRAGMA table_info(turns)')):
+            self.db.execute('ALTER TABLE turns ADD COLUMN clarification_parent TEXT')
+        if not any(r['name']=='reply_expected_until' for r in self.db.execute('PRAGMA table_info(turns)')):
+            self.db.execute('ALTER TABLE turns ADD COLUMN reply_expected_until REAL NOT NULL DEFAULT 0')
+        self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS one_clarification_child ON turns(device,clarification_parent) WHERE clarification_parent IS NOT NULL')
     def close(self):self.db.close()
     def provision(self,device,token):
         ident(device)
@@ -70,30 +79,40 @@ class Store:
     def own(self,device,conversation):
         ident(conversation)
         if not self.db.execute('SELECT 1 FROM conversations WHERE id=? AND device=?',(conversation,device)).fetchone():raise Denied('not_found')
-    def admit(self,device,conversation,request,fingerprint):
+    def admit(self,device,conversation,request,fingerprint,parent=None):
         ident(request);self.own(device,conversation)
+        if parent is not None:ident(parent)
         self.db.execute('BEGIN IMMEDIATE')
         try:
             row=self.db.execute('SELECT * FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
             if row:
-                if row['conversation']!=conversation or row['fingerprint']!=fingerprint:raise Conflict('idempotency_key_conflict')
+                if row['conversation']!=conversation or row['fingerprint']!=fingerprint or row['clarification_parent']!=parent:raise Conflict('idempotency_key_conflict')
                 result=row['id']
             else:
                 if self.db.execute("SELECT 1 FROM turns WHERE conversation=? AND state NOT IN ('done','error','cancelled')",(conversation,)).fetchone():raise Conflict('conversation_busy_or_uncertain')
+                if parent is not None:
+                    prior=self.db.execute('SELECT id,device,state,reply_expected,reply_expected_until FROM turns WHERE conversation=? ORDER BY rowid DESC LIMIT 1',(conversation,)).fetchone()
+                    if prior is None or prior['id']!=parent or prior['device']!=device or prior['state']!='done' or prior['reply_expected']!=1 or prior['reply_expected_until']<=time.time() or self.db.execute('SELECT 1 FROM turns WHERE device=? AND clarification_parent=?',(device,parent)).fetchone():
+                        raise Denied('clarification_parent_invalid_or_consumed')
                 result=secrets.token_hex(16)
-                self.db.execute("INSERT INTO turns(id,device,conversation,request,fingerprint,state) VALUES(?,?,?,?,?,'transcribing')",(result,device,conversation,request,fingerprint))
+                self.db.execute("INSERT INTO turns(id,device,conversation,request,fingerprint,state,clarification_parent) VALUES(?,?,?,?,?,'transcribing',?)",(result,device,conversation,request,fingerprint,parent))
             self.db.execute('COMMIT');return result
         except BaseException:self.db.execute('ROLLBACK');raise
     def get(self,device,turn):
         ident(turn)
-        row=self.db.execute('SELECT id,conversation,state,detail,transcript FROM turns WHERE id=? AND device=?',(turn,device)).fetchone()
+        row=self.db.execute('SELECT id,conversation,state,detail,transcript,reply_expected FROM turns WHERE id=? AND device=?',(turn,device)).fetchone()
         if not row:raise Denied('not_found')
-        return dict(row)
+        return {**dict(row),'reply_expected':row['state']=='done' and row['reply_expected']==1}
     def by_request(self,device,request):
         ident(request)
-        row=self.db.execute('SELECT id,conversation,state,detail,transcript FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
+        row=self.db.execute('SELECT id,conversation,state,detail,transcript,reply_expected FROM turns WHERE device=? AND request=?',(device,request)).fetchone()
         if not row:raise Denied('not_found')
-        return dict(row)
+        return {**dict(row),'reply_expected':row['state']=='done' and row['reply_expected']==1}
+    def expect_reply(self,device,turn,conversation):
+        self.own(device,conversation)
+        result=self.db.execute("UPDATE turns SET reply_expected=1,reply_expected_until=? WHERE id=? AND device=? AND conversation=? AND state='speaking' AND NOT EXISTS (SELECT 1 FROM dispatches WHERE device=? AND turn=?) AND NOT EXISTS (SELECT 1 FROM approvals WHERE device=? AND turn=?)",
+            (time.time()+300,turn,device,conversation,device,turn,device,turn))
+        return result.rowcount==1
     def finish(self,device,turn,state,detail,transcript=''):
         self.get(device,turn)
         if state not in ('thinking','confirming','acting','speaking','done','error'):raise Denied('invalid_state')

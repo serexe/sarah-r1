@@ -1,4 +1,4 @@
-"""Production HTTP -> VoiceRuntime -> synthetic Codex SSE -> loopback HA -> TTS.
+"""Historical direct-Codex synthetic fixture; not active ACP transport coverage.
 
 Synthetic model decisions prove routing/transport contracts, NOT live model intent
 accuracy. No provider, live HA, microphone, playback or credential loading.

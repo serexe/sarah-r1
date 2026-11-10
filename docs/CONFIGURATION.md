@@ -1,10 +1,10 @@
 # Explicit configuration
 
-Optional `--backend acp` uses a dedicated, fail-closed Hermes composition; default remains `--backend codex`. Read [ACP deployment and limitations](ACP.md) before selecting it. Its fixed generic source/profile paths and pinned model differ from the legacy adapter; no actual configured profile is distributed.
+ACP is the only reasoning backend; `--backend acp` remains accepted for existing invocations and `--backend codex` is rejected. Read [ACP deployment and limitations](ACP.md). Fixed generic source/profile paths remain deployment templates; no configured profile is distributed. Model/provider follow the saved global Hermes default at new child creation.
 
 `config/bridge.env.example` lists generic values; it is not loaded automatically. Export approved values or use a private service-manager environment file. Never source untrusted env files. Integration flags require literal `1`; credentials alone do not enable a backend. No credentials are shipped.
 
-- `R1_CODEX_MODEL`: conversation model identifier; default retained from source. Account/provider must support it; no availability claim is made.
+- `HERMES_GLOBAL_HOME` (optional): service-account global Hermes configuration and provider-secret home; defaults to `~/.hermes`. Never point it to the dedicated ACP profile. The global saved model/provider must resolve through installed Hermes with authorized credentials. No model availability claim is made.
 - `R1_WHISPER_MODELS`: local faster-whisper download/cache root, no automatic fetch.
 - `R1_KOKORO_ROOT`: isolated TTS venv and ONNX/voice asset directory.
 - `R1_TIMEZONE`: IANA timezone shared by calendar schemas, receipts and speech; default UTC. Set before process start. Invalid timezone fails startup/import. Restart your own bridge to change module-level schemas; never mix timezone values across components.

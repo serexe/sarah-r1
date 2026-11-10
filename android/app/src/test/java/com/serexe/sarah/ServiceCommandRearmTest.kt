@@ -110,6 +110,11 @@ class ServiceCommandRearmTest {
   assertTrue(visible.contains("visibleCommand=handoff"));assertTrue(visible.contains("ServiceCommandCompletion("))
   assertTrue(visible.contains("AudioArbiter.idle()"));assertTrue(visible.contains("ServiceRearmPolicy.allowed("))
   assertTrue(visible.contains("current===listenerOwner"));assertTrue(visible.contains("{visibleCommand=null;rearmAfterCommand()}"))
+  assertTrue(source.indexOf("prepareNextModel()",source.indexOf("private fun complete()"))>
+   source.indexOf("listenerCleanup.complete",source.indexOf("private fun complete()")))
+  assertTrue(source.contains("modelWarmup?.complete!=false"))
+  assertTrue(source.contains("modelWarmup?.cancel()"))
+  assertTrue(source.contains("prewarmed.take()"))
   assertTrue(visible.contains("if(!handed) {visibleCommand=null;stage(\"fallback\");notifyWake();finishService()}"))
   assertFalse(visible.contains("startForegroundService("));assertFalse(visible.contains("optedStart="))
   assertFalse(visible.contains("postDelayed(cutoff"))

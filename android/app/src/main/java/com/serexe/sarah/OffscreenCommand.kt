@@ -72,7 +72,7 @@ internal class OffscreenCommand(
   return true
  }
  fun stop() { stopped=true;scope.cancel();capture?.discard();playback?.stop() }
- private suspend fun run(state:JSONObject) {
+ private suspend fun run(state:JSONObject,clarification:Boolean=false,parent:String?=null) {
   if(!eligible()) return
   val vault=Vault(context,this)
   val c=Capture(context,{scope.launch {stage("interrupted");stop()} },true)
@@ -86,7 +86,7 @@ internal class OffscreenCommand(
   // Capture remains bounded even if Activity vanishes or screen turns off.
   // Native endpoint uses recorded activity and within-command pauses; cap discards.
   // Capture's independent 30-second PCM/clock cap discards an unended command.
-  try {withTimeout(31_000L) {job.await()}}
+  try {withTimeout(if(clarification) 9_000L else 31_000L) {job.await()}}
   catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture endpoint failed")}
   c.stop()
   val responseTiming=ResponseTiming()
@@ -107,7 +107,7 @@ internal class OffscreenCommand(
   stage("uploading")
   if(!eligible()) return
   responseTiming.mark("upload_start_ms")
-  val turn=bridge.submitCancellable(conversation,request,wav)
+  val turn=bridge.submitCancellable(conversation,request,wav,if(clarification) parent ?: error("Clarification owner lost") else null)
   activeTurn=turn
   responseTiming.mark("upload_ack_ms")
   if(!eligible()) return
@@ -190,7 +190,16 @@ internal class OffscreenCommand(
       if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
       state.put("chunkInFlight",false).put("status","Reply finished");vault.save(state)
      }
-     stage("done");return
+     stage("done")
+     if(BuildConfig.CLARIFICATION_FOLLOWUP && !clarification && (nextChunk>0 || row.optBoolean("audio")) &&
+      ClarificationReply.valid(row,conversation,turn,request,state.optString("request")) &&
+      !stopped && eligible() && (playback?.stopAndAwait() ?: true) && AudioArbiter.idle() && eligible()) {
+      // Reuse exact surviving FGS/lease and original bounded command deadline.
+      // No old request replay. Followup records a fresh WAV and request in same conversation.
+      playback=null;stage("Listening for your answer")
+      run(state,clarification=true,parent=turn)
+     }
+     return
     }
     "confirming" -> {state.put("phase","uncertain");vault.save(state);stage("confirmation-required");return}
     "error","cancelled","uncertain" -> {state.put("phase",row.optString("state"));vault.save(state);stage(row.optString("state"));return}

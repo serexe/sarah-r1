@@ -1,48 +1,14 @@
-"""Codex-only voice with optional exact HA functions; no generic agent routes."""
+"""Local STT, TTS, and speech formatting for SARAH ACP voice."""
 import asyncio
 import os
-import json
 import re
-import sys
 import threading
 from pathlib import Path
-import httpx
 from .clock import spoken_clocks
 from faster_whisper import WhisperModel
 
-BASE = 'https://chatgpt.com/backend-api/codex'
-MODEL = os.getenv('R1_CODEX_MODEL', 'gpt-6.1-sol')
-CODEX_TOTAL_SECONDS = 90
-SSE_LINE_BYTES = 64 * 1024
-SSE_TOTAL_BYTES = 1024 * 1024
 TTS_STAGE_SECONDS = 20
 TTS_TERMINATE_GRACE = 1
-
-
-async def _sse_lines(response, deadline):
-    # Raw identity bytes: do not let iter_lines or decompression accumulate an
-    # unbounded line before our limits run. Count comments/metadata too.
-    if response.headers.get('content-encoding', 'identity') != 'identity':
-        raise RuntimeError('codex_sse_encoding_denied')
-    pending = bytearray()
-    total = 0
-    async for chunk in response.aiter_raw():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise TimeoutError('codex_deadline')
-        total += len(chunk)
-        if total > SSE_TOTAL_BYTES:
-            raise RuntimeError('codex_sse_total_too_large')
-        # Explicit LF boundaries preserve split UTF-8 and unfinished lines.
-        pieces = chunk.split(b'\n')
-        for index, piece in enumerate(pieces):
-            if len(pending) + len(piece) > SSE_LINE_BYTES:
-                raise RuntimeError('codex_sse_line_too_large')
-            pending.extend(piece)
-            if index < len(pieces) - 1:
-                yield bytes(pending).rstrip(b'\r').decode('utf-8')
-                pending.clear()
-    if pending:
-        yield bytes(pending).rstrip(b'\r').decode('utf-8')
 
 
 async def _settle(task):
@@ -150,17 +116,8 @@ def speech_text(text):
 
 
 class VoiceRuntime:
-    ready = True
-    reason = 'Tools and Home Assistant disabled; Codex-only voice conversation'
-    def __init__(self, source):
-        source = Path(source).resolve(strict=True)
-        if not (source/'agent/credential_pool.py').is_file():
-            raise ValueError('invalid_hermes_source')
-        sys.path.insert(0, str(source))
-        from agent.credential_pool import load_pool
-        from agent.codex_headers import codex_cloudflare_headers
-        self.load_pool = load_pool
-        self.headers = codex_cloudflare_headers
+    """Shared local voice utilities. Reasoning belongs to ACPRuntime only."""
+    def __init__(self):
         self.whisper = None
         self.lock = threading.Lock()
 
@@ -174,94 +131,6 @@ class VoiceRuntime:
         if not text or len(text)>8000:
             raise ValueError('empty_or_oversize_transcript')
         return text
-
-    async def reply(self, text, history=(), dispatch=None):
-        # One deadline across all HTTP attempts, not a per-read timeout and not
-        # wait_for(to_thread(...)): cancellation closes the owned upstream socket.
-        deadline = asyncio.get_running_loop().time() + CODEX_TOTAL_SECONDS
-        async with asyncio.timeout_at(deadline):
-            inputs = list(history)+[{'role':'user','content':text}]
-            results = []
-            for _ in range(10):
-                try:
-                    result = await self._reply(text, history, deadline, inputs, dispatch is not None)
-                except Exception:
-                    if results: return 'I could not finish summarizing the tool results ('+type(sys.exc_info()[1]).__name__+').'
-                    raise
-                if isinstance(result, str):
-                    return result
-                if dispatch is None: raise RuntimeError('codex_tool_denied')
-                for call in result:
-                    try:
-                        outcome = await dispatch(call['name'], json.loads(call['arguments']))
-                    except (ValueError, TypeError, KeyError):
-                        outcome = {'reply':'Home Assistant request denied. Nothing dispatched.'}
-                    results.append(outcome)
-                    inputs.extend([call, {'type':'function_call_output','call_id':call['call_id'],'output':json.dumps(outcome)}])
-            return 'Tool request limit reached before I could finish the answer.'
-
-    async def _reply(self, text, history, deadline, inputs=None, tools=False):
-        pool = self.load_pool('openai-codex')
-        entry = pool.select()
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=15), follow_redirects=False, trust_env=False) as client:
-            for attempt in range(3):
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise TimeoutError('codex_deadline')
-                if entry is None:
-                    raise RuntimeError('codex_pool_unavailable_no_fallback')
-                token = entry.runtime_api_key
-                endpoint = (entry.runtime_base_url or BASE).rstrip('/')
-                if entry.provider != 'openai-codex' or endpoint != BASE or not token:
-                    raise RuntimeError('codex_route_denied')
-                headers = self.headers(token, base_url=BASE)
-                headers.update({'Authorization': 'Bearer '+token, 'Accept':'text/event-stream',
-                                'Accept-Encoding':'identity'})
-                from .ha import TOOLS as HA_TOOLS, LIGHT_GUIDANCE
-                from .siyuan import TOOLS as SY_TOOLS, GUIDANCE
-                from .calendar import TOOLS as CALENDAR_TOOLS, GUIDANCE as CALENDAR_GUIDANCE
-                from datetime import datetime
-                from zoneinfo import ZoneInfo
-                calendar_clock=' Current server time in '+os.getenv('R1_TIMEZONE','UTC')+': '+datetime.now(ZoneInfo(os.getenv('R1_TIMEZONE','UTC'))).isoformat()+'. Resolve today/tomorrow against this clock, not training knowledge.'
-                from .tvtime import TOOLS as TVTIME_TOOLS, GUIDANCE as TVTIME_GUIDANCE
-                TOOLS=HA_TOOLS+SY_TOOLS+CALENDAR_TOOLS+TVTIME_TOOLS
-                payload = {'model':MODEL, 'instructions':('You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. This identity applies only to this R1 instance. Converse naturally and reply briefly. Interpret free language and contextual followups from conversation; no command phrase or Home Assistant prefix is required. Tools are available on every turn, not mandatory. Ordinary discussion, quoted examples and negation are not action requests. Only supplied HA, SiYuan, Calendar and TV time functions exist. '+LIGHT_GUIDANCE+' '+GUIDANCE+' '+CALENDAR_GUIDANCE+' '+TVTIME_GUIDANCE+' Use ha_get_state for detailed current state, ha_list_services for actual service parameters, and ha_call_service for requested actions without repeated routine approval. No entity/action allowlist or spoken authorization gate applies. Never invent entities, service availability, tool outcomes or physical success. An accepted service is not necessarily a verified outcome. Use actual returned states and errors; do not automatically retry uncertain writes. No host shell, administration or arbitrary network tool exists.' if tools else 'You are S.A.R.A.H, pronounced Sarah, your R1 voice companion. This identity applies only to this R1 instance. Reply briefly in plain spoken English. No tools or Home Assistant actions are available. Never claim actions were performed.'),
-                           'input':inputs if inputs is not None else list(history)+[{'role':'user','content':text}], 'tools':TOOLS if tools else [], 'tool_choice':'auto' if tools else 'none', 'parallel_tool_calls':False, 'store':False, 'stream':True,
-                           'reasoning':{'effort':'high'}}
-                if tools: payload['instructions']+=calendar_clock
-                parts=[]; completed=False; output_chars=0; calls=[]
-                async with client.stream('POST',BASE+'/responses',headers=headers,json=payload) as response:
-                    if response.status_code in (401,403,429):
-                        entry=pool.mark_exhausted_and_rotate(status_code=response.status_code,api_key_hint=token,credential_id=entry.id)
-                        continue
-                    if response.status_code != 200:
-                        raise RuntimeError('codex_http_'+str(response.status_code))
-                    async for line in _sse_lines(response, deadline):
-                        if not line.startswith('data: '):continue
-                        if line[6:]=='[DONE]':continue
-                        event=json.loads(line[6:]); kind=event.get('type','')
-                        if kind=='response.output_text.delta':
-                            delta=event.get('delta','')
-                            output_chars += len(delta)
-                            if output_chars>12000:raise RuntimeError('reply_too_long')
-                            parts.append(delta)
-                        if kind=='response.output_item.done' and event.get('item',{}).get('type')=='function_call':
-                            calls.append(event['item'])
-                        if kind=='response.completed':
-                            final_calls=[i for i in (event.get('response',{}).get('output') or []) if i.get('type')=='function_call']
-                            if final_calls: calls=final_calls
-                            completed=True
-                            break  # Completion is terminal; don't await an upstream EOF.
-                        if kind in ('error','response.failed','response.incomplete'):
-                            raise RuntimeError('codex_response_failed')
-                result=''.join(parts).strip()
-                if calls:
-                    if not completed or not tools or len(calls)!=1: raise RuntimeError('codex_tool_denied')
-                    call=calls[0]
-                    if set(call)-{'type','id','status','call_id','name','arguments'} or not isinstance(call.get('call_id'),str) or not isinstance(call.get('arguments'),str) or len(call['arguments'])>20000: raise RuntimeError('codex_tool_denied')
-                    return [{k:call[k] for k in ('type','call_id','name','arguments')}]
-                if not completed or not result:raise RuntimeError('codex_incomplete_response')
-                return result
-        raise RuntimeError('codex_pool_exhausted_no_fallback')
 
     async def speak(self, text, path):
         # Local CPU voice; no external speech fallback.

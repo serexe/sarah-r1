@@ -1,7 +1,6 @@
 # Generic dedicated ACP template; no credentials or deployment identity.
-model:
-  provider: openai-codex
-  default: gpt-6.1-sol
+# Provider/model resolved from global Hermes default at each ACP child creation.
+# Dedicated profile remains isolated for history, schemas, memory and plugins.
 agent:
   max_turns: 10
   tool_use_enforcement: false

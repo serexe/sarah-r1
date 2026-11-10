@@ -1,6 +1,5 @@
-"""Offline production-runtime regressions. Synthetic pool, transport, and children only."""
+"""Offline ACP binding and local voice regressions; no provider requests."""
 import asyncio
-import inspect
 import io
 import json
 import signal
@@ -10,12 +9,10 @@ import threading
 import time
 import unittest
 import wave
-from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import httpx
 from aiohttp.test_utils import TestClient, TestServer
 from bridge import runtime as module
 from bridge.core import Store
@@ -33,10 +30,10 @@ class ACPTests(unittest.IsolatedAsyncioTestCase):
         import subprocess
         import os
         script = '''
-import asyncio,sys,json
+import asyncio,sys,json,os
 from pathlib import Path
 from types import SimpleNamespace as NS
-sys.path.insert(0,'/opt/hermes-agent')
+sys.path.insert(0,os.environ.get('HERMES_SOURCE','/opt/hermes-agent'))
 from bridge.acp_launcher import compose, REVIEWED_SOUL
 from bridge.acp_policy import NAMES, SCHEMAS
 from hermes_state import SessionDB
@@ -158,8 +155,13 @@ asyncio.run(main())
         with tempfile.TemporaryDirectory() as home:
             import shutil
             shutil.copyfile('bridge/sarah-acp.yaml', Path(home)/'config.yaml')
+            global_home = Path(home)/'global'
+            global_home.mkdir()
+            (global_home/'config.yaml').write_text('model:\n  provider: openai-codex\n  default: gpt-offline\n')
             result = subprocess.run([sys.executable, '-B', '-c', script, home],
-                env={'HOME':home,'HERMES_HOME':home,'PATH':'/usr/bin:/bin'},
+                env={'HOME':home,'HERMES_HOME':home,'HERMES_GLOBAL_HOME':str(global_home),
+                     'HERMES_SOURCE':__import__('os').environ.get('HERMES_SOURCE','/opt/hermes-agent'),
+                     'PATH':'/usr/bin:/bin'},
                 capture_output=True,text=True,timeout=25)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             print(result.stdout)
@@ -458,12 +460,13 @@ asyncio.run(main())
                 await self.bound()
 
     async def test_inactive_selector_rejects_audio_without_agent(self):
-        with patch('bridge.acp_runtime.VoiceRuntime') as old:
-            create_runtime(self.store, '/not-used')
-            old.assert_called_once_with('/not-used')
+        with self.assertRaisesRegex(ValueError, 'unsupported_voice_backend'):
+            create_runtime(self.store, '/not-used', 'codex')
+        with self.assertRaisesRegex(ValueError, 'unsupported_voice_backend'):
+            create_runtime(self.store, '/not-used', 'unknown')
         # Readiness fixture only; never depend on a live profile's generated files.
         with patch('bridge.acp_launcher.validate_profile'):
-            adapter = create_runtime(self.store, '/not-used', 'acp')
+            adapter = create_runtime(self.store, '/not-used')
             self.assertTrue(adapter.ready)
         adapter = ACPRuntime(self.store, '/not-used', self.config)
         self.assertFalse(adapter.ready)  # Non-dedicated cwd still fails closed.
@@ -536,304 +539,13 @@ asyncio.run(main())
             check(True)
 
 
-DONE = (b'data: {"type":"response.output_text.delta","delta":"hello"}\n\n'
-        b'data: {"type":"response.completed"}\n\n')
-
-
-class Stream(httpx.SyncByteStream, httpx.AsyncByteStream):
-    def __init__(self, chunks=(DONE,), delay=0.0):
-        self.chunks = chunks
-        self.delay = delay
-        self.closed = False
-
-    def __iter__(self):
-        for chunk in self.chunks:
-            time.sleep(self.delay)
-            yield chunk
-
-    async def __aiter__(self):
-        for chunk in self.chunks:
-            await asyncio.sleep(self.delay)
-            yield chunk
-
-    def close(self):
-        self.closed = True
-
-    async def aclose(self):
-        self.closed = True
-
-
-def runtime():
-    # Bypass constructor: never import Hermes auth or load any credentials/models.
-    adapter = VoiceRuntime.__new__(VoiceRuntime)
-    entry = SimpleNamespace(runtime_api_key='synthetic', runtime_base_url=module.BASE,
-                            provider='openai-codex', id='synthetic-entry')
-    rotations = []
-
-    def rotate(**kwargs):
-        rotations.append(kwargs)
-        return entry
-
-    pool = SimpleNamespace(select=lambda: entry, mark_exhausted_and_rotate=rotate)
-    adapter.load_pool = lambda provider: pool
-    adapter.headers = lambda *args, **kwargs: {}
-    return adapter, rotations
-
-
-class Transport:
-    def __init__(self, responses):
-        self.responses = iter(responses)
-        self.requests = []
-        self.clients = []
-        self.stack = ExitStack()
-
-    def __enter__(self):
-        def handle(request):
-            self.requests.append(request)
-            status, stream = next(self.responses)
-            return httpx.Response(status, stream=stream)
-        transport = httpx.MockTransport(handle)
-        sync, asynchronous = httpx.Client, httpx.AsyncClient
-
-        def factory(cls, **kwargs):
-            client = cls(transport=transport, **kwargs)
-            self.clients.append(client)
-            return client
-        self.stack.enter_context(patch.object(module.httpx, 'Client', lambda **kw: factory(sync, **kw)))
-        self.stack.enter_context(patch.object(module.httpx, 'AsyncClient', lambda **kw: factory(asynchronous, **kw)))
-        return self
-
-    def __exit__(self, *args):
-        return self.stack.__exit__(*args)
-
-
-async def reply(adapter):
-    # Both pre-fix synchronous and repaired asynchronous implementation exercised.
-    result = adapter.reply('hello', [{'role': 'assistant', 'content': 'prior'}])
-    return await result if inspect.isawaitable(result) else result
-
-
-class CodexTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reasoning_high_and_route_contract(self):
-        adapter, _ = runtime()
-        stream = Stream()
-        with Transport([(200, stream)]) as transport:
-            self.assertEqual(await reply(adapter), 'hello')
-        request = transport.requests[0]
-        payload = json.loads(request.content)
-        self.assertEqual(payload['reasoning'], {'effort': 'high'})
-        self.assertEqual(payload['model'], 'gpt-6.1-sol')
-        self.assertEqual(payload['tools'], [])
-        self.assertEqual(payload['tool_choice'], 'none')
-        self.assertFalse(payload['store'])
-        self.assertTrue(payload['stream'])
-        self.assertEqual(str(request.url), module.BASE + '/responses')
-        self.assertTrue(stream.closed)
-        self.assertTrue(all(client.is_closed for client in transport.clients))
-
-    async def test_heartbeat_total_deadline_closes_upstream(self):
-        adapter, _ = runtime()
-        stream = Stream([b': heartbeat\n\n'] * 12 + [DONE], delay=0.015)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
-            started = time.monotonic()
-            with self.assertRaises(TimeoutError):
-                await asyncio.wait_for(reply(adapter), 1)
-            self.assertLess(time.monotonic() - started, 0.18)
-        self.assertTrue(stream.closed)
-
-    async def test_stalled_read_deadline_closes_upstream(self):
-        adapter, _ = runtime()
-        stream = Stream([DONE], delay=0.2)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.04, create=True), Transport([(200, stream)]):
-            with self.assertRaises(TimeoutError):
-                await asyncio.wait_for(reply(adapter), 1)
-        self.assertTrue(stream.closed)
-
-    async def test_deadline_spans_pool_rotation_attempts(self):
-        adapter, rotations = runtime()
-        streams = [Stream([b'rejected'], delay=0.03) for _ in range(3)]
-        # Delay response headers too, independent of whether error bodies are consumed.
-        original = module.httpx.AsyncClient
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(429, s) for s in streams]) as transport:
-            real_send = original.send
-
-            async def delayed_send(client, *args, **kwargs):
-                await asyncio.sleep(0.03)
-                return await real_send(client, *args, **kwargs)
-
-            with patch.object(original, 'send', delayed_send):
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(reply(adapter), 1)
-        self.assertLess(len(transport.requests), 3)
-        self.assertEqual(rotations[0], {'status_code': 429, 'api_key_hint': 'synthetic',
-                                        'credential_id': 'synthetic-entry'})
-        self.assertTrue(streams[0].closed)
-
-    async def test_sse_unterminated_line_is_bounded(self):
-        adapter, _ = runtime()
-        stream = Stream([b':' + b'a' * 40, b'a' * 40, b'\n\n', DONE])
-        with patch.object(module, 'SSE_LINE_BYTES', 64, create=True), Transport([(200, stream)]):
-            with self.assertRaisesRegex(RuntimeError, '^codex_sse_line_too_large$'):
-                await reply(adapter)
-        self.assertTrue(stream.closed)
-
-    async def test_sse_total_bytes_includes_heartbeats(self):
-        adapter, _ = runtime()
-        stream = Stream([b': heartbeat\n\n'] * 50 + [DONE])
-        with patch.object(module, 'SSE_TOTAL_BYTES', 512, create=True), Transport([(200, stream)]):
-            with self.assertRaisesRegex(RuntimeError, '^codex_sse_total_too_large$'):
-                await reply(adapter)
-        self.assertTrue(stream.closed)
-
-    async def test_real_loopback_socket_closed_on_deadline(self):
-        # Real HTTPX I/O, rerouted only by test transport. No provider contacted.
-        for mode in ('headers_stall', 'body_stall', 'heartbeat'):
-            with self.subTest(mode=mode):
-                adapter, _ = runtime()
-                closed = asyncio.Event()
-                handlers = set()
-
-                async def upstream(reader, writer):
-                    handlers.add(asyncio.current_task())
-                    sender = None
-                    try:
-                        request = await reader.readuntil(b'\r\n\r\n')
-                        length = next(int(line.split(b':', 1)[1]) for line in request.split(b'\r\n')
-                                      if line.lower().startswith(b'content-length:'))
-                        await reader.readexactly(length)
-                        if mode != 'headers_stall':
-                            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n')
-                            await writer.drain()
-                        if mode == 'heartbeat':
-                            async def heartbeats():
-                                while True:
-                                    writer.write(b': heartbeat\n\n')
-                                    await writer.drain()
-                                    await asyncio.sleep(0.005)
-                            sender = asyncio.create_task(heartbeats())
-                        self.assertEqual(await reader.read(), b'')
-                        closed.set()
-                    finally:
-                        if sender:
-                            sender.cancel()
-                            await asyncio.gather(sender, return_exceptions=True)
-                        writer.close()
-                        await writer.wait_closed()
-                        handlers.discard(asyncio.current_task())
-
-                server = await asyncio.start_server(upstream, '127.0.0.1', 0)
-                port = server.sockets[0].getsockname()[1]
-                raw = httpx.AsyncHTTPTransport()
-
-                class Loopback(httpx.AsyncBaseTransport):
-                    async def handle_async_request(self, request):
-                        # Production request still pins original supported URL.
-                        if str(request.url) != module.BASE + '/responses':
-                            raise AssertionError('unexpected upstream URL')
-                        request.url = httpx.URL(f'http://127.0.0.1:{port}/responses')
-                        return await raw.handle_async_request(request)
-
-                    async def aclose(self):
-                        await raw.aclose()
-
-                client_class = httpx.AsyncClient
-                try:
-                    with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.08, create=True), \
-                         patch.object(module.httpx, 'Client', side_effect=AssertionError('synchronous_upstream_disallowed')), \
-                         patch.object(module.httpx, 'AsyncClient', lambda **kw: client_class(transport=Loopback(), **kw)):
-                        with self.assertRaises(TimeoutError):
-                            await asyncio.wait_for(reply(adapter), 1)
-                        await asyncio.wait_for(closed.wait(), 0.5)
-                finally:
-                    server.close()
-                    await server.wait_closed()
-                    for task in list(handlers):
-                        task.cancel()
-                    await asyncio.gather(*handlers, return_exceptions=True)
-                    await raw.aclose()
-
-    async def test_completion_closes_without_waiting_for_eof(self):
-        adapter, _ = runtime()
-        stream = Stream([DONE, b': never needed\n\n'], delay=0.03)
-        with patch.object(module, 'CODEX_TOTAL_SECONDS', 0.05, create=True), Transport([(200, stream)]):
-            self.assertEqual(await reply(adapter), 'hello')
-        self.assertTrue(stream.closed)
-
-    async def test_rotation_keeps_issuing_identity_and_no_fallback(self):
-        adapter, rotations = runtime()
-        streams = [Stream(), Stream()]
-        with Transport([(429, streams[0]), (200, streams[1])]):
-            self.assertEqual(await reply(adapter), 'hello')
-        self.assertEqual(rotations, [{'status_code': 429, 'api_key_hint': 'synthetic',
-                                     'credential_id': 'synthetic-entry'}])
-        self.assertTrue(all(s.closed for s in streams))
-
-    async def test_http_expiry_terminal_and_next_admission(self):
-        await self.http_expiry()
-
-    async def test_stop_http_stream_closes_before_worker_reuse(self):
-        await self.http_expiry(cancelled=True)
-
-    async def http_expiry(self, cancelled=False):
-        adapter, _ = runtime()
-        adapter.transcribe = lambda path: 'synthetic transcript'
-
-        async def speak(text, path):
-            pass
-        adapter.speak = speak
-        streams = [Stream([b': heartbeat\n\n'] * 30 + [DONE], delay=10 if cancelled else 0.01), Stream()]
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp) / 'state.db')
-            store.provision('test', 'a' * 48)
-            conversation = store.conversation('test')
-            client = TestClient(TestServer(make_app(store, adapter)))
-            await client.start_server()
-            buf = io.BytesIO()
-            with wave.open(buf, 'wb') as wav:
-                wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
-                wav.writeframes(b'\0\0' * 16000)
-            headers = {'Authorization': 'Bearer ' + 'a' * 48,
-                       'Content-Type': 'audio/wav', 'X-Conversation': conversation}
-            try:
-                with patch.object(module, 'CODEX_TOTAL_SECONDS', 10 if cancelled else 0.05, create=True), Transport([(200, s) for s in streams]) as transport:
-                    for key, expected in [('first', 'error'), ('second', 'done')]:
-                        response = await client.post('/v1/turns', data=buf.getvalue(),
-                                                     headers={**headers, 'Idempotency-Key': key})
-                        self.assertEqual(response.status, 202)
-                        turn = (await response.json())['turn']
-                        if cancelled and key == 'first':
-                            async with asyncio.timeout(1):
-                                while store.get('test', turn)['state'] != 'thinking':
-                                    await asyncio.sleep(0.001)
-                            cancel_response = await client.post('/v1/turns/' + turn + '/cancel',
-                                                                json={}, headers={'Authorization': headers['Authorization']})
-                            self.assertEqual(cancel_response.status, 200)
-                            self.assertEqual((await cancel_response.json())['state'], 'cancelled')
-                            async with asyncio.timeout(1):
-                                while not streams[0].closed:
-                                    await asyncio.sleep(0.005)
-                            self.assertTrue(all(c.is_closed for c in transport.clients))
-                            self.assertEqual(len(transport.requests), 1)
-                            expected = 'cancelled'
-                        async with asyncio.timeout(1):
-                            while True:
-                                result = await (await client.get('/v1/turns/' + turn, headers=headers)).json()
-                                if result['state'] in ('error', 'done', 'cancelled'):
-                                    break
-                                await asyncio.sleep(0.005)
-                        self.assertEqual(result['state'], expected)
-                        self.assertTrue(streams[0].closed)
-                    self.assertEqual(result['detail'], 'hello')
-            finally:
-                await client.close()
-                store.close()
-
+class LocalVoiceOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_native_tts_dispatch_ownership(self):
         # Existing HTTP/runtime seams; native thread + synthetic child are real.
         # No Whisper/Kokoro model, credentials or integration traffic involved.
         for boundary in ('native', 'tts', 'dispatch'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
-                adapter, _ = runtime()
+                adapter = VoiceRuntime()
                 started=asyncio.Event(); release=threading.Event(); native_done=threading.Event()
                 loop=asyncio.get_running_loop(); children=[]; calls=[]; clips=[]
                 first=True
@@ -945,7 +657,7 @@ class CodexTests(unittest.IsolatedAsyncioTestCase):
 
 class TTSTests(unittest.IsolatedAsyncioTestCase):
     async def probe(self, stage, mode, *, fail=False, ignores_term=True):
-        adapter, _ = runtime()
+        adapter = VoiceRuntime()
         children = []
         real_spawn = asyncio.create_subprocess_exec
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,6 +8,7 @@ interface BridgePort {
  fun health():JSONObject
  fun create():String
  fun submit(conversation:String,request:String,wav:ByteArray):String
+ fun submitClarification(conversation:String,request:String,wav:ByteArray,parent:String):String=throw UnsupportedOperationException()
  fun lookup(request:String):JSONObject
  fun poll(turn:String):JSONObject
  fun cancel(turn:String):JSONObject

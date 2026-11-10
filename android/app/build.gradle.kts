@@ -25,10 +25,31 @@ android {
   }
  }
  defaultConfig {
-  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 50; versionName = "0.1.50-timer-countdown-review"
-  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a") }
+  applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35
+  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   buildConfigField("String", "RECOVERY_REQUEST_HASH", "\"${recoveryHash("requestHash")}\"")
   buildConfigField("String", "RECOVERY_CONVERSATION_HASH", "\"${recoveryHash("conversationHash")}\"")
+ }
+ // Both flavors share applicationId, code, storage, Keystore namespace and signing.
+ // Different version codes allow ordinary signed upgrades from v50/v52; never install both together.
+ flavorDimensions += "device"
+ productFlavors {
+  create("phone") {
+   dimension = "device"; versionCode = 53; versionName = "0.1.53-phone-review"
+   buildConfigField("String", "WAKE_PHRASE", "\"Hey Sarah\"")
+   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"HEY_SARAH\"")
+   buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.25f")
+   buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "false")
+   ndk { abiFilters += "arm64-v8a" }
+  }
+  create("lenovo") {
+   dimension = "device"; versionCode = 65; versionName = "0.1.65-lenovo-followup-mic-review"
+   buildConfigField("String", "WAKE_PHRASE", "\"Sarah\"")
+   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"SARAH\"")
+   buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.24f")
+   buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "true")
+   ndk { abiFilters += "armeabi-v7a" }
+  }
  }
  buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("localReview") }; release { isMinifyEnabled = false } }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

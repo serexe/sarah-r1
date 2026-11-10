@@ -28,6 +28,7 @@ class SarahViewModelTest {
   var reports=0;var reportFailure:Exception?=null;var lastReport:JSONObject?=null
   override fun sendDiagnostics(payload:JSONObject):String {reports++;lastReport=payload;reportFailure?.let {throw it};return "ABCDEF012345ABCDEF012345"}
   var healthy=true;var failure:Exception?=null;var posts=0;var lookups=0
+  var childPosts=0;var childConversation:String?=null;var childParent:String?=null
   var creates=0;var cancels=0;var confirms=0;var lookupFailure:Exception?=null
   var onSubmit:(()->Unit)?=null
   var onConfirm:(()->Unit)?=null
@@ -37,6 +38,11 @@ class SarahViewModelTest {
   override fun health():JSONObject {failure?.let {throw it};return JSONObject().put("protocol",1).put("ready",healthy)}
   override fun create():String {creates++;return "c1"}
   override fun submit(conversation:String,request:String,wav:ByteArray):String {posts++;onSubmit?.invoke();return "t1"}
+  override fun submitClarification(conversation:String,request:String,wav:ByteArray,parent:String):String {
+   childPosts++;childConversation=conversation;childParent=parent
+   row.put("id","t2").put("reply_expected",false).put("audio",false)
+   return "t2"
+  }
   override fun lookup(request:String):JSONObject {lookups++;lookupFailure?.let {throw it};return row}
   override fun poll(turn:String)=row
   override fun pollChunks(turn:String,after:Int):JSONObject {if(chunkMode && after==2) row.put("state","done");return row}
@@ -181,6 +187,23 @@ class SarahViewModelTest {
   assertEquals(listOf(0,1),f.wire.chunks);assertEquals("playing",f.vm.ui.value.phase)
   f.sound.finish();delay(30);assertEquals("done",f.vm.ui.value.phase)
   assertEquals(2,f.sound.played);f.vm.onBackground()
+ }
+ @Test fun a2CaptionUsesActualAssistantDetailBeforeChunkPlaybackNotUserOrProgress()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true
+  f.wire.row.put("state","speaking").put("detail","Actual fixture answer.")
+   .put("transcript","User fixture request.").put("audio_chunks",JSONObject().put("count",1))
+  f.vm.onForeground();f.vm.startCapture();assertNull(f.vm.ui.value.responseText)
+  f.mic.end.complete(Unit);delay(30)
+  assertEquals("playing",f.vm.ui.value.phase)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  assertFalse(f.vm.ui.value.responseText!!.contains("User fixture"))
+  f.wire.row.put("state","done").remove("audio_chunks")
+  f.sound.finish();delay(30)
+  assertEquals("Actual fixture answer.",f.vm.ui.value.responseText)
+  f.vm.clearLocal()
+  assertNull(f.vm.ui.value.responseText)
+  assertTrue(f.vm.ui.value.transcript.isEmpty())
+  f.vm.onBackground()
  }
  @Test fun stopDuringFirstChunkCancelsServerAndNeverPlaysQueuedChunk()=runBlocking {
   val f=fixture();f.mic.endpointReached=true
@@ -480,6 +503,22 @@ class SarahViewModelTest {
   }
   assertEquals(4,restarts);assertEquals(0,stops)
  }
+ @Test fun resumedActivityAcceptsExactServiceCapabilityAndReturnsAfterSpokenReply()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true)
+  f.vm.onForeground();HeySarahListenerService.status.value="Wake listening"
+  f.vm.onForeground();assertFalse(f.vm.ui.value.canCapture)
+  HeySarahListenerService.status.value="released"
+  var returned=0;var resolved=false;var live=true
+  val handoff=VisibleCommandHandoff({live},{resolved=it;returned++})
+  try {
+   assertTrue(f.vm.acceptWake(handoff));assertFalse(f.vm.acceptWake(handoff))
+   f.mic.end.complete(Unit);delay(50)
+   assertEquals(1,f.wire.posts);assertEquals("playing",f.vm.ui.value.phase)
+   assertEquals(0,returned)
+   f.sound.finish();assertEquals(1,returned);assertTrue(resolved)
+   assertEquals(0,f.rearms());assertEquals("done",f.vm.ui.value.phase)
+  } finally {live=false;f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
  @Test fun visibleHandoffWaitsForPlaybackAndStopCleanupAndNeverReplaysUnknown()=runBlocking {
   val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true);f.vm.onForeground()
   var completed=0;var resolved=false
@@ -506,6 +545,80 @@ class SarahViewModelTest {
    assertEquals(1,unknown.wire.lookups);assertEquals(1,unknown.wire.posts)
    assertEquals(request,unknown.memory.value.getString("request"));assertEquals(0,unknown.rearms())
   } finally {valid=false;unknown.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun explicitClarificationReopensOnlyAfterSpeechAndStopInvalidatesIt()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  var valid=true;var completed=0;var resolved=true;var serviceStops=0
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},abortWindow={serviceStops++;valid=false},awaitPollSlot={})
+  wire.row.put("audio",true).put("reply_expected",true)
+  val handoff=VisibleCommandHandoff({valid},{completed++;resolved=it})
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50)
+   assertEquals("playing",vm.ui.value.phase);assertEquals(1,mics.size)
+   sound.finish();delay(30)
+   assertEquals(2,mics.size);assertEquals("recording",vm.ui.value.phase)
+   assertTrue(vm.ui.value.status.startsWith("Listening for your answer"))
+   assertEquals(0,completed);assertEquals(1,wire.posts)
+   valid=false;handoff.stop();delay(50)
+   assertTrue(serviceStops>0)
+   assertTrue(mics[1].discarded);assertEquals(1,completed);assertFalse(resolved)
+   mics[1].end.complete(Unit);delay(20)
+   assertEquals(1,wire.posts);assertEquals(0,wire.childPosts)
+  } finally {valid=false;vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun spokenFollowupKeepsServiceOwnerAndSubmitsOneBoundChild()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  var serviceStops=0;var valid=true;var completed=0
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},abortWindow={serviceStops++;valid=false},awaitPollSlot={})
+  val handoff=VisibleCommandHandoff({valid},{completed++})
+  wire.row.put("audio",true).put("reply_expected",true)
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50)
+   assertEquals("playing",vm.ui.value.phase);assertEquals(1,mics.size)
+   sound.finish();delay(30)
+   assertEquals("recording",vm.ui.value.phase);assertEquals(2,mics.size)
+   assertEquals(0,serviceStops);assertTrue(handoff.owned());assertEquals(0,completed)
+   mics[1].end.complete(Unit);delay(50)
+   assertEquals(0,serviceStops);assertEquals(1,wire.posts);assertEquals(1,wire.childPosts)
+   assertEquals("c1",wire.childConversation);assertEquals("t1",wire.childParent)
+   assertEquals("c1",memory.value.getString("conversation"));assertEquals("t2",memory.value.getString("turn"))
+   assertEquals(1,completed);assertEquals("done",vm.ui.value.phase)
+   sound.finish();delay(20);assertEquals(1,wire.childPosts);assertEquals(2,mics.size)
+  } finally {valid=false;vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun ordinaryReplyMarkerFalseDoesNotReopenAfterSpeech()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true).put("reply_expected",false)
+  var completed=0;val handoff=VisibleCommandHandoff({true},{completed++})
+  try {
+   f.vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(f.vm.acceptWake(handoff));f.mic.end.complete(Unit);delay(50)
+   f.sound.finish();delay(30)
+   assertEquals(1,f.captureStarts());assertEquals(1,completed);assertEquals(1,f.wire.posts)
+  } finally {f.vm.onBackground();HeySarahListenerService.status.value="off"}
+ }
+ @Test fun clarificationSilenceExpiresWithoutReplyOrReplay()=runBlocking {
+  val memory=Memory(persisted());val wire=Wire();val mics=mutableListOf<Mic>()
+  lateinit var sound:Sound
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->Mic().also {mics.add(it);it.endpointReached=true}},
+   {done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),
+   Dispatchers.Unconfined,{true},awaitPollSlot={})
+  wire.row.put("audio",true).put("reply_expected",true)
+  var completed=0;val handoff=VisibleCommandHandoff({true},{completed++})
+  try {
+   vm.onForeground();HeySarahListenerService.status.value="released";assertTrue(vm.acceptWake(handoff))
+   mics[0].end.complete(Unit);delay(50);sound.finish();delay(30)
+   assertEquals(2,mics.size);assertEquals(0,completed)
+   withTimeout(11_000) {while(completed==0) delay(100)}
+   assertTrue(mics[1].joined);assertTrue(mics[1].discarded)
+   assertEquals(1,wire.posts);assertEquals(1,completed)
+  } finally {vm.onBackground();HeySarahListenerService.status.value="off"}
  }
  @Test fun visibleStopInvalidatesOwnerAndWaitsForCaptureFinally()=runBlocking {
   val f=fixture();f.vm.onForeground();var valid=true;var completed=0
