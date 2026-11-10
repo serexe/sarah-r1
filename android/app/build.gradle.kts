@@ -40,14 +40,16 @@ android {
    buildConfigField("String", "WAKE_RESULT_ALIAS", "\"HEY_SARAH\"")
    buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.25f")
    buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "false")
+   buildConfigField("boolean", "LENOVO_NOISE_TRIAL", "false")
    ndk { abiFilters += "arm64-v8a" }
   }
   create("lenovo") {
-   dimension = "device"; versionCode = 65; versionName = "0.1.65-lenovo-followup-mic-review"
-   buildConfigField("String", "WAKE_PHRASE", "\"Sarah\"")
-   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"SARAH\"")
+   dimension = "device"; versionCode = 67; versionName = "0.1.67-lenovo-nova-wake-review"
+   buildConfigField("String", "WAKE_PHRASE", "\"Nova\"")
+   buildConfigField("String", "WAKE_RESULT_ALIAS", "\"NOVA\"")
    buildConfigField("float", "WAKE_KEYWORD_THRESHOLD", "0.24f")
    buildConfigField("boolean", "CLARIFICATION_FOLLOWUP", "true")
+   buildConfigField("boolean", "LENOVO_NOISE_TRIAL", "true")
    ndk { abiFilters += "armeabi-v7a" }
   }
  }

@@ -71,8 +71,10 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
    }
   } catch(e:Exception) { /* No release ACK if construction/release failed. */ throw e}
   recorder=r;buffer.reset();capped=false;endpointReached=false;endpoint=CommandEndpoint(SystemClock::elapsedRealtimeNanos)
+  var noise:NoiseSuppressionTrial?=null
   try {
    if(stopping) return@withContext
+   if(BuildConfig.LENOVO_NOISE_TRIAL) noise=NoiseSuppressionTrial.attach(r.audioSessionId,"command")
    val request=AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
     .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
     .setOnAudioFocusChangeListener {if(it<=0 && !stopping) interrupt()}.build()
@@ -143,12 +145,13 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
    recorder=null
    watchdog?.shutdownNow()
    try {r.stop()} catch (_:Exception) {}
+   val effectReleased=noise?.close()!=false
    val released=runCatching {r.release()}.isSuccess
    run {
     val callbacks=runCatching {manager.unregisterAudioRecordingCallback(silencing)}.isSuccess
     val routesClosed=runCatching {manager.unregisterAudioDeviceCallback(routes)}.isSuccess
     val focusClosed=runCatching {focus?.let {manager.abandonAudioFocusRequest(it)}}.isSuccess;focus=null
-    if(released && callbacks && routesClosed && focusClosed) {AudioArbiter.release(this@Capture);releaseComplete=true}
+    if(effectReleased && released && callbacks && routesClosed && focusClosed) {AudioArbiter.release(this@Capture);releaseComplete=true}
     else {interrupted=true;throw IllegalStateException("Capture cleanup failed")}
    }
   }

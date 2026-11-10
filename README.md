@@ -1,6 +1,6 @@
 # Sarah · Android + Ubuntu Touch / R1
 
-A voice companion for conversations and everyday tasks. Tap the microphone, ask a question, hear a reply, and keep the conversation going. On Android, you can also opt in to **“Hey Sarah”** wake-word detection.
+A voice companion for conversations and everyday tasks. Tap the microphone, ask a question, hear a reply, and keep the conversation going. On Android, you can also opt in to wake-word detection (“Hey Sarah” on phone; experimental “Nova” on Lenovo review source).
 
 Sarah connects your device to a **self-hosted HTTPS voice bridge**. The shared bridge handles transcription, AI conversation, speech generation, and any tools you choose to enable. You need your own configured backend; this is not a standalone or fully offline AI assistant.
 
@@ -16,7 +16,7 @@ The original [sarah-android repository](https://github.com/serexe/sarah-android)
 
 - **Talk naturally:** tap to speak, listen to spoken replies, and ask follow-up questions.
 - **Choose your device:** Kotlin/Compose on Android, or native Qt/QML on an R1 running Ubuntu Touch.
-- **Use an optional Android wake word:** on-device “Hey Sarah” detection, with a foreground-service notification and an explicit Stop control. The Ubuntu Touch client is tap-to-talk only; it has no wake word or background listening mode.
+- **Use an optional Android wake word:** on-device “Hey Sarah” on phone or experimental “Nova” on Lenovo, with a foreground-service notification and explicit Stop control. [Wake-word testing and customization](android/WAKE-WORD-TESTING.md) describes source-level phrase changes and their limits. The Ubuntu Touch client is tap-to-talk only; it has no wake word or background listening mode.
 - **Ask for help with your home, notes, or calendar:** enable supported tools through your backend, with only the access you configure. Integrations are off by default, not connected out of the box.
 - **Keep service credentials on your server:** pair using an HTTPS bridge address and revocable device token, not your AI-provider or smart-home credentials. Protect local pairing data and transcripts too.
 

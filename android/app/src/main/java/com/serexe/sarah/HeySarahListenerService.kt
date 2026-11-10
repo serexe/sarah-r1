@@ -90,6 +90,7 @@ class HeySarahListenerService:Service() {
  private fun listen() {
   val diagnostic=WakeCaptureDiagnostics()
   var recorder:AudioRecord?=null
+  var noise:NoiseSuppressionTrial?=null
   var engine:HeySarahKeywordEngine?=null
   var focus:AudioFocusRequest?=null
   var failure:Exception?=null
@@ -125,6 +126,7 @@ class HeySarahListenerService:Service() {
    phaseAt=SystemClock.elapsedRealtime()
    val r=listenerCleanup.construct {AudioRecord(MediaRecorder.AudioSource.MIC,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,maxOf(min,4096))}
    recorder=r;check(r.state==AudioRecord.STATE_INITIALIZED)
+   if(BuildConfig.LENOVO_NOISE_TRIAL) noise=NoiseSuppressionTrial.attach(r.audioSessionId,"wake")
    diagnostic.duration("recorderMs",SystemClock.elapsedRealtime()-phaseAt)
    recordingCallbackAttempted=true
    audio.registerAudioRecordingCallback(silenced,main)
@@ -175,7 +177,7 @@ class HeySarahListenerService:Service() {
    diagnostic.finish(failure)
    val released=listenerCleanup.finish(
     if(startAttempted) ({recorder!!.stop()}) else null,
-    recorder?.let {r -> {r.release()}},
+    recorder?.let {r -> {val effectReleased=noise?.close()!=false;r.release();check(effectReleased) {"Noise suppression cleanup failed"}}},
     engine?.let {e -> {e.close()}},
     if(recordingCallbackAttempted) ({audio.unregisterAudioRecordingCallback(silenced)}) else null,
     if(routesAttempted) ({audio.unregisterAudioDeviceCallback(routes)}) else null,
