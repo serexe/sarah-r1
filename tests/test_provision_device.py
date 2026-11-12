@@ -72,6 +72,30 @@ class ProvisionDevice(unittest.TestCase):
             provision_device.provision(self.path, '../invalid', TOKEN)
         self.assertFalse(self.path.exists())
 
+    def run_cli(self, contents):
+        token_file = Path(self.tmp.name) / 'token'
+        token_file.write_bytes(contents)
+        with patch('sys.argv', ['provision_device', '--db', str(self.path),
+                               '--device', 'device', '--token-file', str(token_file)]), \
+                patch('sys.stdout'), patch('sys.stderr'):
+            provision_device.main()
+
+    def test_cli_trims_file_whitespace_idempotently(self):
+        token = b'A' * 256
+        for contents in (token, token + b'\n', token + b'\r\n', b' \t' + token + b'\n\t '):
+            with self.subTest(size=len(contents)):
+                self.run_cli(contents)
+                self.assertEqual(self.rows(), [('device', hashlib.sha256(token).hexdigest(), 0)])
+
+    def test_cli_rejects_invalid_and_oversized_files(self):
+        for contents in (b'\r\n ', b'A' * 257, b'A' * 30 + b' ' + b'B' * 30,
+                         TOKEN.encode() + b'\xff', TOKEN.encode() + b'\0',
+                         TOKEN.encode() + b'\n' + b' ' * 4096):
+            with self.subTest(size=len(contents)), self.assertRaises(SystemExit) as raised:
+                self.run_cli(contents)
+            self.assertEqual(raised.exception.code, 1)
+            self.assertFalse(self.path.exists())
+
     def test_two_writers_same_key_or_conflict(self):
         # Both connections open before either starts the provisioning transaction.
         for second in (TOKEN, OTHER):

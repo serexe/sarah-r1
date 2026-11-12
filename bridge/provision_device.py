@@ -1,8 +1,9 @@
 """Local idempotent provisioning; never rotates keys or clears revocation.
 
 Run with python -m bridge.provision_device --db PATH --device ID --token-file PATH.
-Token file must contain exactly 40-256 printable ASCII bytes, without whitespace
-(including a trailing newline). No token is accepted on the command line.
+Surrounding token-file whitespace is stripped. The token itself must contain
+40-256 printable ASCII characters without whitespace. No token is accepted on
+the command line.
 """
 import argparse
 import hashlib
@@ -48,10 +49,11 @@ def main():
     parser.add_argument('--token-file', type=Path, required=True)
     args = parser.parse_args()
     try:
-        # Bound reads; do not trim or normalize an invalid file into a valid key.
         with args.token_file.open('rb') as source:
-            token = source.read(257).decode('ascii')
-        provision(args.db, args.device, token)
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            raise ValueError('Token file too large')
+        provision(args.db, args.device, raw.decode('ascii').strip())
     except (OSError, ValueError, sqlite3.Error):
         parser.exit(1, 'Device provisioning failed; token not printed.\n')
     print('Device API key provisioned/verified; token not printed.')
