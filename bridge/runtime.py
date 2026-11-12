@@ -85,34 +85,46 @@ def _money_words(match):
     return ('minus ' if (before or after) and (dollars or cents) else '') + ' and '.join(parts)
 
 
-def speech_text(text):
-    """Remove presentation Markdown only at the speech boundary, not from history.
+def plain_answer(text, *, protect=None):
+    """Remove common presentation markup; retain literal content and link targets."""
+    literals = []
+    def local_protect(value):
+        literals.append(value)
+        return '\x00' + str(len(literals) - 1) + '\x00'
+    protect_span = protect if protect is not None else local_protect
+    text = re.sub(r'(?m)^ {0,3}(`{3,}|~{3,})[^\n`~]*\n([\s\S]*?)^ {0,3}\1[ \t]*(?:\n|$)',
+                  lambda m: protect_span(m.group(2)), text)
+    text = re.sub(r'`+([^`\n]+)`+', lambda m: protect_span(m.group(1)), text)
+    text = re.sub(r'\\([\\`*_{}\[\]()#+.!>~$-])', lambda m: protect_span(m.group(1)), text)
+    def link(m):
+        label, target = m.group(1), m.group(2)
+        return label if label == target else label + ' (' + target + ')'
+    text = re.sub(r'!?\[([^\]\n]+)\]\(((?:[^()\n]|\([^()\n]*\))*)\)', link, text)
+    text = re.sub(r'(?:https?://|www\.)[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}',
+                  lambda m: protect_span(m[0]), text)
+    text = re.sub(r'(?m)^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$', r'\1', text)
+    text = re.sub(r'(?m)^[ \t]*(?:[-+*]|\d+[.)])[ \t]+', '', text)
+    for marker in ('***', '___', '**', '__', '~~', '*', '_'):
+        pattern = r'(?<!\w)' + re.escape(marker) + r'(\S(?:[^\n]*?\S)?)' + re.escape(marker) + r'(?!\w)'
+        text = re.sub(pattern, r'\1', text)
+    if literals:
+        text = re.sub(r'\x00(\d+)\x00', lambda m: literals[int(m.group(1))], text)
+    return text.strip()
 
-    Keep code contents/escaped symbols literal; never globally delete punctuation.
-    Conservative delimiter boundaries preserve arithmetic and model identifiers.
-    """
+
+def speech_text(text):
+    """Normalize speech at output boundary, keeping stored dialogue untouched."""
+    original = text
     literals = []
     def protect(value):
         literals.append(value)
         return '\x00' + str(len(literals) - 1) + '\x00'
-    def literal(match):
-        return protect(match.group(1))
-    text = re.sub(r'(?m)^ {0,3}(`{3,}|~{3,})[^\n`~]*\n([\s\S]*?)^ {0,3}\1[ \t]*(?:\n|$)',
-                  lambda m: protect(m.group(2)), text)
-    text = re.sub(r'(?m)^ {0,3}(?:`{3,}|~{3,})[\w+-]*[ \t]*(?:\n|$)', '', text)
-    text = re.sub(r'`+([^`\n]+)`+', literal, text)
-    text = re.sub(r'\\([\\`*_{}\[\]()#+.!>~$-])', literal, text)
-    text = re.sub(r'!?\[([^\]\n]+)\]\((?:[^()\n]|\([^()\n]*\))*\)', r'\1', text)
-    text = re.sub(r'(?m)^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$', r'\1', text)
-    text = re.sub(r'(?m)^[ \t]*(?:[-+*]|\d+[.)])[ \t]+', '', text)
-    for marker in ('***', '___', '**', '__', '*', '_'):
-        pattern = r'(?<!\w)' + re.escape(marker) + r'(\S(?:[^\n]*?\S)?)' + re.escape(marker) + r'(?!\w)'
-        text = re.sub(pattern, r'\1', text)
+    text = plain_answer(text, protect=protect)
     # Before literal restoration: code and escaped dollars never become money.
     text = re.sub(r'(?<![\w\\$+./-])(-)?\$(-)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.([0-9]{2}))?(?![\w$/-]|[.,]\d)',
                   _money_words, text)
     text = spoken_clocks(text)
-    return re.sub(r'\x00(\d+)\x00', lambda m: literals[int(m.group(1))], text).strip()
+    return re.sub(r'\x00(\d+)\x00', lambda m: literals[int(m.group(1))], text).strip() or original.strip()
 
 
 class VoiceRuntime:

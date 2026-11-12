@@ -244,8 +244,14 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
             tasks[turn]=task
             task.add_done_callback(lambda done, d=device, t=turn, c=clip: released(d,t,c,done))
         return web.json_response({'turn':turn},status=202)
+    def display_answer(result):
+        # Outward answer only; never rewrite persisted dialogue or receipts.
+        if result['state'] in ('speaking','done'):
+            from .runtime import plain_answer
+            result['detail']=plain_answer(result['detail']) or result['detail']
+        return result
     async def poll(request):
-        turn=request.match_info['turn'];result=store.get(request['device'],turn)
+        turn=request.match_info['turn'];result=display_answer(store.get(request['device'],turn))
         result['audio']=result['state']=='done' and (media/(turn+'.mp3')).is_file()
         stream=streams.get(turn)
         if stream is not None and result['state'] in ('speaking','done'):
@@ -271,7 +277,7 @@ def make_app(store, adapter=None, ha=None, siyuan=None, calendar=None, tvtime=No
         return web.json_response({'accepted':value['accept']})
     async def lookup(request):
         # Read-only, authenticated device ownership; never admits or dispatches.
-        result=store.by_request(request['device'],request.match_info['request'])
+        result=display_answer(store.by_request(request['device'],request.match_info['request']))
         result['audio']=result['state']=='done' and (media/(result['id']+'.mp3')).is_file()
         return web.json_response(result)
     async def audio(request):
