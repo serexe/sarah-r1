@@ -208,6 +208,8 @@ class ACPRuntime(VoiceRuntime):
             client = None
             admitted = False
             success = False
+            sync_uncertain = False
+            session_id = None
             try:
                 async with asyncio.timeout(self.config.timeout):
                     key = (device, conversation, identity, self.config.cwd,
@@ -247,6 +249,10 @@ class ACPRuntime(VoiceRuntime):
                         self._worker_key = (device, conversation, identity, self.config.cwd, session_id)
                     else:
                         session_id = row['session']
+                    # Warm worker evidence belongs to its previous turn.
+                    client.prompt_started = client.prompt_terminal = False
+                    client.mutation_possible = False
+                    client.dispatch_count = 0
                     claimed = self.store.db.execute(
                         "UPDATE acp_sessions SET state='inflight' WHERE device=? AND conversation=? AND backend=? AND session=? AND state='ready'",
                         (device, conversation, identity, session_id))
@@ -260,11 +266,13 @@ class ACPRuntime(VoiceRuntime):
                     if len(fresh) > 2000 or sum(len(r['transcript'])+len(r['detail']) for r in fresh) > 128000:
                         raise ACPError('acp_local_history_bounds')
                     client.turn_nonce = secrets.token_hex(32)
+                    sync_uncertain = bool(fresh)
                     await client.request('_sarah/turn', {'sessionId':session_id, 'nonce':client.turn_nonce,
                         'dialogue':[m for r in fresh for m in (
                             {'role':'user','content':r['transcript']}, {'role':'assistant','content':r['detail']})]})
                     for r in fresh:
                         self.store.db.execute('INSERT INTO acp_local_dialogue VALUES(?,?)',(session_id,r['id']))
+                    sync_uncertain = False
                     client.dispatch = dispatch
                     answer = await client.prompt(session_id, text)
                     expected = False
@@ -281,11 +289,19 @@ class ACPRuntime(VoiceRuntime):
                     admitted = False
                     success = True
                     return (answer,expected) if clarification is not None else answer
-            except BaseException:
+            except BaseException as error:
+                # A completed terminal response without possible mutation can
+                # release the binding for a DIFFERENT new request. Never replay
+                # this failed request. Stop, transport loss, and partial sync
+                # remain uncertain, even if no dispatch was recorded locally.
+                safe = (not isinstance(error, (asyncio.CancelledError, TimeoutError))
+                        and not sync_uncertain and client is not None
+                        and not client.mutation_possible
+                        and client.prompt_terminal)
                 if admitted:
                     self.store.db.execute(
-                        "UPDATE acp_sessions SET state='uncertain' WHERE device=? AND conversation=?",
-                        (device, conversation))
+                        "UPDATE acp_sessions SET state=? WHERE device=? AND conversation=? AND backend=? AND session=? AND state='inflight'",
+                        ('ready' if safe else 'uncertain', device, conversation, identity, session_id))
                 raise
             finally:
                 if client is not None:

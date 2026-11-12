@@ -183,6 +183,7 @@ asyncio.run(main())
         self.adapters = []
         self.stall = False
         self.disconnect_prompt = False
+        self.incomplete_prompt = False
         self.bad_policy = False
         self.entered = asyncio.Event()
 
@@ -225,7 +226,7 @@ asyncio.run(main())
                         return
                     self.frame({'method': 'session/update', 'params': {'sessionId': frame['params']['sessionId'],
                         'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'hello'}}}})
-                    result = {'stopReason': 'end_turn'}
+                    result = {'stopReason': 'cancelled' if owner.incomplete_prompt else 'end_turn'}
                 else:
                     return
                 self.frame({'id': frame['id'], 'result': result})
@@ -329,6 +330,33 @@ asyncio.run(main())
         self.assertEqual(sum(c.get('method') == 'session/prompt' for c in self.calls), 1)
         self.assertTrue(any(c.get('method') == 'session/cancel' for c in self.calls))
         self.assertTrue(self.clients[0].writer.closed)
+
+    async def test_terminal_read_failure_releases_only_new_turn(self):
+        self.incomplete_prompt = True
+        adapter = self.adapter()
+        with patch.object(ACPClient, 'connect', self.connect):
+            with self.assertRaisesRegex(ACPError, 'acp_incomplete_turn'):
+                await self.bound(adapter)
+            self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions').fetchone()[0], 'ready')
+            self.assertTrue(self.clients[0].writer.closed)
+            self.incomplete_prompt = False
+            self.assertEqual(await self.bound(adapter), 'hello')
+        self.assertEqual(sum(c.get('method') == 'session/prompt' for c in self.calls), 2)
+        self.assertEqual(sum(c.get('method') == 'session/load' for c in self.calls), 1)
+
+    async def test_terminal_mutation_failure_stays_uncertain(self):
+        self.incomplete_prompt = True
+        adapter = self.adapter()
+        original = ACPClient.prompt
+        async def risky_prompt(client, session_id, text):
+            client.mutation_possible = True
+            return await original(client, session_id, text)
+        with patch.object(ACPClient, 'connect', self.connect), patch.object(ACPClient, 'prompt', risky_prompt):
+            with self.assertRaisesRegex(ACPError, 'acp_incomplete_turn'):
+                await self.bound(adapter)
+            self.assertEqual(self.store.db.execute('SELECT state FROM acp_sessions').fetchone()[0], 'uncertain')
+            with self.assertRaisesRegex(ACPError, 'acp_session_uncertain_or_changed'):
+                await self.bound(adapter)
 
     async def test_stop_marks_uncertain_closes_and_no_replay(self):
         self.stall = True

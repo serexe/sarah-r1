@@ -74,6 +74,9 @@ class ACPClient:
         self.dispatch = None
         self.turn_nonce = None
         self.dispatch_count = 0
+        self.prompt_started = False
+        self.prompt_terminal = False
+        self.mutation_possible = False
 
     @classmethod
     async def connect(cls, config):
@@ -149,6 +152,11 @@ class ACPClient:
                     raise ACPError('acp_dispatch_binding_denied')
                 validate(p['name'], p['arguments'])
                 self.dispatch_count += 1
+                # Unknown future tools are treated as actions for recovery.
+                if p['name'] not in {'ha_list_entities', 'ha_get_state', 'ha_list_services',
+                        'sy_list_notebooks', 'sy_search', 'sy_read', 'calendar_list',
+                        'calendar_read', 'web_search', 'mailbox_search', 'mailbox_read'}:
+                    self.mutation_possible = True
                 outcome = await self.dispatch(p['name'], p['arguments'])
                 await self.send({'id': message['id'], 'result': outcome})
             elif message['method'] == 'session/request_permission':
@@ -193,8 +201,11 @@ class ACPClient:
         self.dispatch_count = 0
         self.collecting = True
         try:
+            # Mark before the first await; a partially written frame is uncertain.
+            self.prompt_started = True
             result = await self.request('session/prompt', {
                 'sessionId': session_id, 'prompt': [{'type': 'text', 'text': text}]})
+            self.prompt_terminal = True
         finally:
             self.collecting = False
         answer = ''.join(self.parts).strip()
