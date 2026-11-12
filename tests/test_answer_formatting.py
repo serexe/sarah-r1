@@ -24,7 +24,7 @@ class AnswerFormatting(unittest.TestCase):
         for raw, wanted in samples.items():
             with self.subTest(raw=raw):
                 self.assertEqual(plain_answer(raw), wanted)
-                self.assertEqual(speech_text(raw), wanted)
+                self.assertEqual(speech_text(raw), wanted.replace('November 15', 'November fifteenth'))
 
     def test_meaningful_symbols_urls_and_ambiguous_markers(self):
         literal = '2 * 3 = 6; x*y; a_b_c; C#; #49ers; -5; +2; A*; 1.05; 2026-11-15; https://example.test/a_b?q=x*y.'
@@ -52,7 +52,7 @@ class SpokenBoundary(unittest.IsolatedAsyncioTestCase):
             output = Path(tmp) / 'answer.mp3'
             await VoiceRuntime().speak(raw, output)
             self.assertEqual(output.read_bytes(), b'fixture mp3')
-        self.assertEqual(seen, ['Sunday, November15. Formerly Docs (https://example.test/a_(b)).'])
+        self.assertEqual(seen, ['Sunday, November fifteenth. Formerly Docs (https://example.test/a_(b)).'])
 
 
 class AnswerHTTP(AioHTTPTestCase):

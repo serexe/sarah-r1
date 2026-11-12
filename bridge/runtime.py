@@ -85,6 +85,46 @@ def _money_words(match):
     return ('minus ' if (before or after) and (dollars or cents) else '') + ' and '.join(parts)
 
 
+def _pronunciation_cleanup(text):
+    """Bounded spoken dates, names and units; never alter displayed answers."""
+    from datetime import date
+    months = ('January February March April May June July August September October November December').split()
+    ordinals = ('first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth twenty-first twenty-second twenty-third twenty-fourth twenty-fifth twenty-sixth twenty-seventh twenty-eighth twenty-ninth thirtieth thirty-first').split()
+    month_map = {name[:3]: i + 1 for i, name in enumerate(months)}
+    small = ('zero one two three four five six seven eight nine ten eleven twelve '
+             'thirteen fourteen fifteen sixteen seventeen eighteen nineteen').split()
+    tens = 'zero ten twenty thirty forty fifty sixty seventy eighty ninety'.split()
+    def number(n):
+        if n < 20: return small[n]
+        if n < 100: return tens[n // 10] + (' ' + small[n % 10] if n % 10 else '')
+        if n < 1000: return number(n // 100) + ' hundred' + (' ' + number(n % 100) if n % 100 else '')
+        return number(n // 1000) + ' thousand' + (' ' + number(n % 1000) if n % 1000 else '')
+    def month_day(m):
+        month, day = month_map[m[1][:3]], int(m[2])
+        year = int(m[4]) if m[4] else None
+        try: date(year if year is not None else 2000, month, day)
+        except ValueError: return m[0]
+        suffix = 'th' if 10 <= day % 100 <= 20 else {1:'st', 2:'nd', 3:'rd'}.get(day % 10, 'th')
+        if m[3] and m[3].lower() != suffix: return m[0]
+        spoken = months[month - 1] + ' ' + ordinals[day - 1]
+        if year:
+            spoken += ', ' + (number(year // 100) + ' ' + number(year % 100) if 2010 <= year <= 2099 else number(year))
+        return spoken
+    names = '|'.join(sorted(months + list(month_map), key=len, reverse=True))
+    text = re.sub(r'(?<![\w./#-])(' + names + r')\.?\s*([0-9]{1,2})(st|nd|rd|th)?'
+                  r'(?:,\s*(\d{4}))?(?![\w/-]|[.,]\d|,\s*\d{4}[-/])', month_day, text)
+    text = re.sub(r'(?<![\w./-])(\d{1,9}(?:\.\d{1,4})?)\s*km/h(?![\w/-])',
+                  lambda m: (number(int(m[1].split('.')[0])) +
+                             (' point ' + ' '.join(small[int(c)] for c in m[1].split('.')[1]) if '.' in m[1] else '') +
+                             (' kilometer per hour' if m[1] in ('1', '1.0', '1.00', '1.000', '1.0000') else ' kilometers per hour')), text)
+    text = re.sub(r'(?<![\w./#-])(49ers|76ers)\b(?![-/])',
+                  lambda m: {'49ers':'forty niners', '76ers':'seventy sixers'}[m[1]], text)
+    titles = {'Dr.':'Doctor', 'Mr.':'Mister', 'Mrs.':'Misses', 'Ms.':'Miz'}
+    text = re.sub(r'(?<![\w./#-])(Dr\.|Mr\.|Mrs\.|Ms\.)(?=\s+[A-Z][a-z]+\b)',
+                  lambda m: titles[m[1]], text)
+    return re.sub(r'(?<=\w)\s+vs\.(?=\s+\w)', ' versus', text)
+
+
 def plain_answer(text, *, protect=None):
     """Remove common presentation markup; retain literal content and link targets."""
     literals = []
@@ -124,6 +164,7 @@ def speech_text(text):
     text = re.sub(r'(?<![\w\\$+./-])(-)?\$(-)?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.([0-9]{2}))?(?![\w$/-]|[.,]\d)',
                   _money_words, text)
     text = spoken_clocks(text)
+    text = _pronunciation_cleanup(text)
     return re.sub(r'\x00(\d+)\x00', lambda m: literals[int(m.group(1))], text).strip() or original.strip()
 
 

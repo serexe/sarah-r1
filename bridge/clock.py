@@ -54,7 +54,7 @@ def spoken_clocks(text):
         h,n,ap=m.groups()
         if not 1<=int(h)<=12: return m.group()
         # Plain PM. period belongs to sentence; dotted p.m. is abbreviation.
-        suffix='.' if m.group().endswith('.') and m.group().count('.')==1 else ''
+        suffix='.' if m.group().endswith('.') and m.group().count('.')==1 and text[m.end():m.end()+1] not in (',',';',':') else ''
         return clock(int(h)%12+(12 if ap.lower()=='p' else 0),int(n or 0))+suffix
     text=re.sub(r'(?<![\w:])('+_H+r')(?::('+_M+r'))?\s*'+_AP+r'(?!\w)',explicit,text,flags=re.I)
     # Bare HH:MM only with explicit clock context, never arbitrary durations/ratios.
